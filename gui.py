@@ -33,7 +33,7 @@ def setup_logging():
 # converter/watcher의 로그도 파일에 남도록 임포트 전에 설정한다
 setup_logging()
 
-from converter import convert_folder, ConvertResult
+from converter import convert_folder, ConvertResult, nfd_to_visual
 from watcher import FolderWatcher
 
 
@@ -234,9 +234,11 @@ class App(tk.Tk):
 
     def _log_result(self, result: ConvertResult):
         if result.status == "converted":
-            self._log(f"✓ {result.original}  →  {result.converted}", "converted")
+            visual = nfd_to_visual(result.original)
+            self._log(f"✓ {visual}  →  {result.converted}", "converted")
         elif result.status == "error":
-            self._log(f"✗ {result.original}  오류: {result.error}", "error")
+            visual = nfd_to_visual(result.original)
+            self._log(f"✗ {visual}  오류: {result.error}", "error")
 
     def _log(self, msg: str, tag: str = "info"):
         self.log.config(state="normal")

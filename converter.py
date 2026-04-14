@@ -29,6 +29,34 @@ def is_nfd(name: str) -> bool:
     return len(name) != len(unicodedata.normalize('NFC', name))
 
 
+# 초성(U+1100~U+1112), 중성(U+1161~U+1175), 종성(U+11A8~U+11C2) →
+# 호환 자모(U+3131~U+3163) 매핑 테이블
+_JAMO_TO_COMPAT: dict[int, int] = {}
+
+_CHO  = [0x3131,0x3132,0x3134,0x3137,0x3138,0x3139,0x3141,0x3142,0x3143,
+         0x3145,0x3146,0x3147,0x3148,0x3149,0x314A,0x314B,0x314C,0x314D,0x314E]
+_JONG = [0x3131,0x3132,0x3133,0x3134,0x3135,0x3136,0x3137,0x3139,0x313A,
+         0x313B,0x313C,0x313D,0x313E,0x313F,0x3140,0x3141,0x3142,0x3144,
+         0x3145,0x3146,0x3147,0x3148,0x314A,0x314B,0x314C,0x314D,0x314E]
+
+for _i, _c in enumerate(_CHO):
+    _JAMO_TO_COMPAT[0x1100 + _i] = _c          # 초성
+for _i in range(21):
+    _JAMO_TO_COMPAT[0x1161 + _i] = 0x314F + _i  # 중성
+for _i, _c in enumerate(_JONG):
+    _JAMO_TO_COMPAT[0x11A8 + _i] = _c           # 종성
+
+
+def nfd_to_visual(name: str) -> str:
+    """NFD 자모를 화면에 분리되어 보이는 호환 자모로 변환한다.
+
+    macOS는 Hangul Jamo(U+1100~U+11FF)를 폰트 수준에서 합쳐 렌더링하므로
+    NFD 파일명이 합쳐진 한글처럼 보인다. Compatibility Jamo(U+3131~U+3163)로
+    바꾸면 macOS에서도 ㅎㅏㄴ처럼 분리된 형태로 표시된다.
+    """
+    return ''.join(chr(_JAMO_TO_COMPAT.get(ord(c), ord(c))) for c in name)
+
+
 def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> ConvertResult:
     """
     파일/폴더 1개를 NFD → NFC로 변환한다. 이미 NFC면 'skipped'를 반환한다.
