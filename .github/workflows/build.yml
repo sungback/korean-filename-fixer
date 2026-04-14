@@ -1,0 +1,81 @@
+name: Build
+
+on:
+  push:
+    tags:
+      - "v*"          # v1.0.0 같은 태그 푸시 시 자동 빌드
+  workflow_dispatch:  # GitHub 웹에서 수동 실행도 가능
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            name: macOS
+            artifact: KoreanFilenameFixer.app
+            zip_name: KoreanFilenameFixer-macOS.zip
+
+          - os: windows-latest
+            name: Windows
+            artifact: KoreanFilenameFixer
+            zip_name: KoreanFilenameFixer-Windows.zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: PyInstaller 빌드 (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          pyinstaller --windowed --onedir --name "KoreanFilenameFixer" --clean main.py
+          cd dist
+          zip -r ../${{ matrix.zip_name }} KoreanFilenameFixer.app
+
+      - name: PyInstaller 빌드 (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          pyinstaller --windowed --onedir --name "KoreanFilenameFixer" --clean main.py
+          Compress-Archive -Path dist\KoreanFilenameFixer -DestinationPath ${{ matrix.zip_name }}
+        shell: pwsh
+
+      - name: 빌드 결과 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.zip_name }}
+          path: ${{ matrix.zip_name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    # 태그 푸시일 때만 릴리즈 생성
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: macOS 빌드 다운로드
+        uses: actions/download-artifact@v4
+        with:
+          name: KoreanFilenameFixer-macOS.zip
+
+      - name: Windows 빌드 다운로드
+        uses: actions/download-artifact@v4
+        with:
+          name: KoreanFilenameFixer-Windows.zip
+
+      - name: GitHub Release 생성
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            KoreanFilenameFixer-macOS.zip
+            KoreanFilenameFixer-Windows.zip
+          generate_release_notes: true
