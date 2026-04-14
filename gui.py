@@ -15,6 +15,29 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, scrolledtext, ttk
 
+try:
+    from AppKit import (NSStatusBar, NSVariableStatusItemLength,
+                        NSMenu, NSMenuItem, NSObject)
+    _APPKIT = True
+except ImportError:
+    _APPKIT = False
+
+
+if _APPKIT:
+    class _TrayDelegate(NSObject):
+        """NSMenuItem 액션을 Python 콜백으로 연결하는 ObjC 델리게이트."""
+        _show_cb = None
+        _quit_cb = None
+
+        def showWindow_(self, sender):
+            if self._show_cb:
+                self._show_cb()
+
+        def quitApp_(self, sender):
+            if self._quit_cb:
+                self._quit_cb()
+
+
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".korean_filename_fixer.json")
 
 
@@ -42,7 +65,6 @@ class App(tk.Tk):
         super().__init__()
         self.title("Korean Filename Fixer")
         self.resizable(True, True)
-        self.minsize(500, 400)
         self.configure(padx=16, pady=16)
 
         self._queue: queue.Queue = queue.Queue()
@@ -50,8 +72,12 @@ class App(tk.Tk):
         self._dark = self._is_dark_mode()
 
         self._build_ui()
+        self._apply_window_constraints()
         self._load_config()
         self._poll_queue()
+        self._setup_tray()
+        # 독 아이콘 클릭(창이 숨겨진 상태) 시 창을 복원한다
+        self.createcommand("::tk::mac::ReopenApplication", self._show_window)
 
     def _is_dark_mode(self) -> bool:
         """시스템 테마가 다크 모드인지 감지한다."""
@@ -67,15 +93,22 @@ class App(tk.Tk):
         folder_frame = tk.Frame(self)
         folder_frame.pack(fill="x", pady=(0, 10))
 
+        # 고정 너비 위젯을 먼저 오른쪽에 배치하고, Entry가 남은 공간을 채운다
         tk.Label(folder_frame, text="감시 폴더:").pack(side="left")
-        self.folder_var = tk.StringVar()
-        tk.Entry(folder_frame, textvariable=self.folder_var, width=42,
-                 state="readonly").pack(side="left", padx=(6, 4))
-        tk.Button(folder_frame, text="선택",
-                  command=self._choose_folder).pack(side="left")
+
+        # 오른쪽 고정 영역을 서브프레임으로 묶어 창이 좁아져도 항상 표시되도록 한다
+        right_frame = tk.Frame(folder_frame)
+        right_frame.pack(side="right")
+
         self.remember_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(folder_frame, text="기억", variable=self.remember_var,
-                       command=self._on_remember_toggle).pack(side="left", padx=(6, 0))
+        tk.Checkbutton(right_frame, text="기억", variable=self.remember_var,
+                       command=self._on_remember_toggle).pack(side="right")
+        tk.Button(right_frame, text="선택",
+                  command=self._choose_folder).pack(side="right", padx=(4, 0))
+
+        self.folder_var = tk.StringVar()
+        tk.Entry(folder_frame, textvariable=self.folder_var,
+                 state="readonly").pack(side="left", padx=(6, 4), fill="x", expand=True)
 
         # 버튼 행
         btn_frame = tk.Frame(self)
@@ -116,6 +149,26 @@ class App(tk.Tk):
         self.log.tag_config("converted", foreground=c_converted)
         self.log.tag_config("error",     foreground=c_error)
         self.log.tag_config("info",      foreground=log_fg)
+
+    def _apply_window_constraints(self):
+        """
+        렌더된 UI의 실제 요구 크기를 기준으로 창 최소 크기를 고정한다.
+        Tk/macOS에서는 위젯이 모두 배치되기 전에 minsize를 주면
+        기대보다 작게 줄어드는 경우가 있어 idle 이후 한 번 더 적용한다.
+        """
+        self.update_idletasks()
+
+        min_width = max(620, self.winfo_reqwidth())
+        min_height = max(430, self.winfo_reqheight())
+
+        self.minsize(min_width, min_height)
+        self.after_idle(lambda: self.minsize(
+            max(620, self.winfo_reqwidth()),
+            max(430, self.winfo_reqheight()),
+        ))
+
+        if self.winfo_width() < min_width or self.winfo_height() < min_height:
+            self.geometry(f"{min_width}x{min_height}")
 
     def _load_config(self):
         """저장된 폴더 경로를 불러온다. 폴더가 실제로 존재할 때만 적용한다."""
@@ -246,6 +299,56 @@ class App(tk.Tk):
         self.log.see("end")
         self.log.config(state="disabled")
 
-    def on_close(self):
+    # ─── 시스템 트레이 (macOS 메뉴바) ────────────────────────
+
+    def _setup_tray(self):
+        """AppKit NSStatusBar로 메뉴바 아이콘을 등록한다."""
+        if not _APPKIT:
+            logging.warning("AppKit 없음 — 트레이 아이콘 비활성")
+            return
+        try:
+            self._tray_delegate = _TrayDelegate.alloc().init()
+            self._tray_delegate._show_cb = self._show_window
+            self._tray_delegate._quit_cb = self._quit_app
+
+            show_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "창 열기", "showWindow:", "")
+            show_item.setTarget_(self._tray_delegate)
+
+            quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "종료", "quitApp:", "")
+            quit_item.setTarget_(self._tray_delegate)
+
+            menu = NSMenu.alloc().init()
+            menu.addItem_(show_item)
+            menu.addItem_(NSMenuItem.separatorItem())
+            menu.addItem_(quit_item)
+
+            status_bar = NSStatusBar.systemStatusBar()
+            self._status_item = status_bar.statusItemWithLength_(
+                NSVariableStatusItemLength)
+            self._status_item.button().setTitle_("K")
+            self._status_item.setMenu_(menu)
+        except Exception:
+            logging.exception("트레이 아이콘 설정 실패")
+
+    def _show_window(self):
+        """메뉴바 또는 독 아이콘 클릭 시 창을 복원한다."""
+        self.after(0, self.deiconify)
+        self.after(0, self.lift)
+        self.after(0, self.focus_force)
+
+    def _quit_app(self):
+        """감시 중지 → 메뉴바 아이콘 제거 → 창 종료."""
         self.watcher.stop()
-        self.destroy()
+        try:
+            if hasattr(self, "_status_item"):
+                NSStatusBar.systemStatusBar().removeStatusItem_(
+                    self._status_item)
+        except Exception:
+            pass
+        self.after(0, self.destroy)
+
+    def on_close(self):
+        """창 닫기(X) 시 메뉴바로 숨긴다. 종료는 메뉴바 '종료' 사용."""
+        self.withdraw()

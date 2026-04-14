@@ -14,7 +14,7 @@ import unicodedata
 from typing import Callable
 
 from watchdog.events import FileSystemEventHandler
-from converter import convert_file, is_nfd
+from converter import convert_file, is_nfd, should_ignore_name
 
 
 def _make_observer():
@@ -73,6 +73,8 @@ class NFDHandler(FileSystemEventHandler):
                 pass
 
         actual_name = os.path.basename(actual_path)
+        if should_ignore_name(actual_name):
+            return
         if not is_nfd(actual_name):
             return
 

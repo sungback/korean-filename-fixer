@@ -8,6 +8,7 @@ macOS는 한글 파일명을 NFD(자모 분해)로 저장하고, Windows/Linux�
 
 import logging
 import os
+import re
 import shutil
 import time
 import unicodedata
@@ -24,9 +25,19 @@ class ConvertResult:
     error: str = ""
 
 
+_IGNORED_TEMP_NAME_RE = re.compile(r"\.sb-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+$")
+
+
 def is_nfd(name: str) -> bool:
     """NFD는 NFC보다 코드포인트가 많으므로 NFC 변환 후 길이 변화로 판단한다."""
     return len(name) != len(unicodedata.normalize('NFC', name))
+
+
+def should_ignore_name(name: str) -> bool:
+    """저장 중 생성되는 임시 파일명은 변환 대상에서 제외한다."""
+    if name.startswith("__nfc_tmp_") and name.endswith("__"):
+        return True
+    return _IGNORED_TEMP_NAME_RE.search(name) is not None
 
 
 # 초성(U+1100~U+1112), 중성(U+1161~U+1175), 종성(U+11A8~U+11C2) →
@@ -67,6 +78,9 @@ def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> 
     """
     dirpath = os.path.dirname(filepath)
     name = os.path.basename(filepath)
+
+    if should_ignore_name(name):
+        return ConvertResult(filepath, name, name, "skipped")
 
     if not is_nfd(name):
         return ConvertResult(filepath, name, name, "skipped")
@@ -127,6 +141,8 @@ def convert_folder(folder: str) -> list[ConvertResult]:
     results = []
     for entry in all_entries:
         if not os.path.exists(entry):
+            continue
+        if should_ignore_name(os.path.basename(entry)):
             continue
         results.append(convert_file(entry))
 
