@@ -6,6 +6,9 @@ on:
       - "v*"          # v1.0.0 같은 태그 푸시 시 자동 빌드
   workflow_dispatch:  # GitHub 웹에서 수동 실행도 가능
 
+permissions:
+  contents: write  # Release 생성 및 파일 업로드 권한
+
 jobs:
   build:
     strategy:
