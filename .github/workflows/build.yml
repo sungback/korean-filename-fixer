@@ -1,5 +1,8 @@
 name: Build
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   push:
     tags:
@@ -28,10 +31,10 @@ jobs:
 
     steps:
       - name: 코드 체크아웃
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Python 설정
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -53,7 +56,7 @@ jobs:
         shell: pwsh
 
       - name: 빌드 결과 업로드
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.zip_name }}
           path: ${{ matrix.zip_name }}
@@ -66,17 +69,17 @@ jobs:
 
     steps:
       - name: macOS 빌드 다운로드
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: KoreanFilenameFixer-macOS.zip
 
       - name: Windows 빌드 다운로드
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: KoreanFilenameFixer-Windows.zip
 
       - name: GitHub Release 생성
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             KoreanFilenameFixer-macOS.zip
