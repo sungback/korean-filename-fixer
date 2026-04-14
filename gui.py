@@ -16,7 +16,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Korean Filename Fixer")
-        self.resizable(False, False)
+        self.resizable(True, True)
+        self.minsize(500, 400)
         self.configure(padx=16, pady=16)
 
         self._queue: queue.Queue = queue.Queue()
@@ -66,13 +67,13 @@ class App(tk.Tk):
         self.log = scrolledtext.ScrolledText(self, width=60, height=18,
                                              state="disabled", wrap="none",
                                              font=("Menlo", 11))
-        self.log.pack()
+        self.log.pack(fill="both", expand=True)
 
         # 로그 색상 태그
-        self.log.tag_config("converted", foreground="#007700")
-        self.log.tag_config("skipped",   foreground="#888888")
-        self.log.tag_config("error",     foreground="#cc0000")
-        self.log.tag_config("info",      foreground="#0055cc")
+        self.log.tag_config("converted", foreground="#66ff66")
+        self.log.tag_config("skipped",   foreground="#aaaaaa")
+        self.log.tag_config("error",     foreground="#ff6666")
+        self.log.tag_config("info",      foreground="#ffffff")
 
     # ─── 이벤트 핸들러 ────────────────────────────────────
 

@@ -24,14 +24,18 @@ class NFDHandler(FileSystemEventHandler):
         if not event.is_directory:
             self._handle(event.src_path)
 
+    def on_modified(self, event):
+        if not event.is_directory:
+            self._handle(event.src_path)
+
     def on_moved(self, event):
-        # 이동/이름변경 후 목적지 경로 검사
         target = event.dest_path if hasattr(event, 'dest_path') else event.src_path
         self._handle(target)
 
     def _handle(self, path: str):
         name = os.path.basename(path)
-        if is_nfd(name):
+        # is_nfd()가 False면 이미 NFC이므로 자연스럽게 중복 처리 방지됨
+        if is_nfd(name) and os.path.exists(path):
             result = convert_file(path)
             self.callback(result)
 
