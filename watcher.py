@@ -64,6 +64,10 @@ class NFDHandler(FileSystemEventHandler):
             if now - self._recent.get(path, 0) < self._DEDUP_WINDOW:
                 return True
             self._recent[path] = now
+            # 만료된 항목을 정리해 장시간 실행 시 메모리 누수를 방지한다
+            stale = [p for p, t in self._recent.items() if now - t >= self._DEDUP_WINDOW]
+            for p in stale:
+                del self._recent[p]
         return False
 
     def _handle(self, path: str):
