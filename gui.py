@@ -359,6 +359,9 @@ class App(tk.Tk):
     def _log(self, msg: str, tag: str = "info"):
         self.log.config(state="normal")
         self.log.insert("end", msg + "\n", tag)
+        # 1000줄 초과 시 앞 200줄 삭제해 메모리 누수를 방지한다
+        if int(self.log.index("end-1c").split(".")[0]) > 1000:
+            self.log.delete("1.0", "201.0")
         self.log.see("end")
         self.log.config(state="disabled")
 
