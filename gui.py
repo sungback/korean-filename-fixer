@@ -193,6 +193,7 @@ class App(tk.Tk):
                 self.folder_var.set(folder)
                 self.remember_var.set(True)
                 self.status_var.set("저장된 폴더를 불러왔습니다.")
+            self._start_watch()
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
