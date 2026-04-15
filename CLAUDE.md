@@ -34,8 +34,20 @@ bash build.sh
 - **스레드 안전**: GUI 업데이트는 Queue → `after(100ms)` 폴링으로 메인 스레드에서만 처리
 - **경로 정규화**: FSEventsObserver가 경로를 NFC로 반환할 수 있어 `os.scandir`로 실제 NFD 경로를 재탐색
 
+## 배포 (GitHub Actions)
+`v*` 태그 푸시 시 macOS/Windows 자동 빌드 및 GitHub Release 생성 (`.github/workflows/build.yml`)
+
+```bash
+git tag vX.X.X && git push origin main && git push origin vX.X.X
+```
+
+- 태그 규칙: `v{major}.{minor}.{patch}` — 최신 `v1.4.0`
+- 기능 추가: minor 버전 업, 버그 수정/리팩토링: patch 버전 업
+- **소스 기능 변경이 없을 때(문서, 설정 등)는 태그 없이 push만**
+
 ## 작업 원칙
 - 리팩토링 시 기능/동작 변경 금지
 - 가독성 우선 (성능 최적화는 필요할 때만)
 - UI 변경 후 반드시 빌드(`bash build.sh`) 및 앱 실행으로 확인
 - 불필요한 추상화, 미래 대비 설계 금지
+- **요청이 애매하면 추측으로 진행하지 말고 먼저 질문할 것**
