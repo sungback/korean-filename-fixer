@@ -77,6 +77,13 @@ from converter import (
     nfd_to_visual,
     preview_folder,
 )
+from autostart import (
+    disable_autostart,
+    enable_autostart,
+    get_bundle_executable_path,
+    is_autostart_enabled,
+    needs_autostart_refresh,
+)
 from watcher import FolderWatcher
 
 
@@ -94,6 +101,7 @@ class App(tk.Tk):
         self._poll_after_id = None
         self._shutting_down = False
         self._startup_scan_in_progress = False
+        self._autostart_path = get_bundle_executable_path()
 
         self._build_ui()
         self._apply_window_constraints()
@@ -183,6 +191,17 @@ class App(tk.Tk):
             command=self._on_scan_on_startup_toggle,
         ).pack(side="left")
 
+        self.launch_on_login_var = tk.BooleanVar(value=False)
+        self.chk_launch_on_login = tk.Checkbutton(
+            frame,
+            text="로그인 시 자동 시작",
+            variable=self.launch_on_login_var,
+            command=self._on_launch_on_login_toggle,
+        )
+        self.chk_launch_on_login.pack(side="left", padx=(12, 0))
+        if not self._autostart_path:
+            self.chk_launch_on_login.config(state="disabled")
+
     def _build_button_row(self):
         """감시 제어 버튼 행을 구성한다."""
         frame = tk.Frame(self)
@@ -261,6 +280,7 @@ class App(tk.Tk):
             )
             self.exclude_var.set(self._format_exclude_patterns(exclude_patterns))
             self.scan_on_startup_var.set(bool(data.get("scan_on_startup", True)))
+            self._sync_autostart_state()
             folder = data.get("folder", "")
             if folder and os.path.isdir(folder):
                 self.folder_var.set(folder)
@@ -271,7 +291,7 @@ class App(tk.Tk):
                 else:
                     self._start_watch()
         except (FileNotFoundError, json.JSONDecodeError):
-            pass
+            self._sync_autostart_state()
 
     def _save_config(self):
         """체크박스 ON이면 폴더 경로를 저장하고, OFF이면 config 파일을 삭제한다."""
@@ -294,6 +314,40 @@ class App(tk.Tk):
     def _on_scan_on_startup_toggle(self):
         if self.remember_var.get() and self.folder_var.get():
             self._save_config()
+
+    def _sync_autostart_state(self):
+        """현재 앱 경로와 LaunchAgent 상태를 동기화한다."""
+        if not self._autostart_path:
+            self.launch_on_login_var.set(False)
+            return
+        try:
+            if needs_autostart_refresh(self._autostart_path):
+                enable_autostart(self._autostart_path)
+                self._log("로그인 시 자동 시작 경로 갱신", "info")
+            self.launch_on_login_var.set(is_autostart_enabled(self._autostart_path))
+        except Exception as e:
+            self.launch_on_login_var.set(False)
+            self._log(f"로그인 시 자동 시작 상태 확인 실패: {e}", "error")
+
+    def _on_launch_on_login_toggle(self):
+        if self.launch_on_login_var.get():
+            if not self._autostart_path:
+                self.launch_on_login_var.set(False)
+                self._log("로그인 시 자동 시작은 .app 실행에서만 지원됩니다.", "error")
+                return
+            try:
+                enable_autostart(self._autostart_path)
+                self._log("로그인 시 자동 시작 활성화", "info")
+            except Exception as e:
+                self.launch_on_login_var.set(False)
+                self._log(f"로그인 시 자동 시작 설정 실패: {e}", "error")
+        else:
+            try:
+                disable_autostart()
+                self._log("로그인 시 자동 시작 비활성화", "info")
+            except Exception as e:
+                self.launch_on_login_var.set(True)
+                self._log(f"로그인 시 자동 시작 해제 실패: {e}", "error")
 
     def _get_exclude_patterns(self) -> list[str]:
         return clean_exclude_patterns(self.exclude_var.get().split(","))
