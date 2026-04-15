@@ -80,7 +80,7 @@ from converter import (
 from autostart import (
     disable_autostart,
     enable_autostart,
-    get_bundle_executable_path,
+    get_autostart_executable_path,
     is_autostart_enabled,
     needs_autostart_refresh,
 )
@@ -101,7 +101,7 @@ class App(tk.Tk):
         self._poll_after_id = None
         self._shutting_down = False
         self._startup_scan_in_progress = False
-        self._autostart_path = get_bundle_executable_path()
+        self._autostart_path = get_autostart_executable_path()
 
         self._build_ui()
         self._apply_window_constraints()
@@ -316,7 +316,7 @@ class App(tk.Tk):
             self._save_config()
 
     def _sync_autostart_state(self):
-        """현재 앱 경로와 LaunchAgent 상태를 동기화한다."""
+        """현재 앱 경로와 자동 시작 상태를 동기화한다."""
         if not self._autostart_path:
             self.launch_on_login_var.set(False)
             return
@@ -333,7 +333,7 @@ class App(tk.Tk):
         if self.launch_on_login_var.get():
             if not self._autostart_path:
                 self.launch_on_login_var.set(False)
-                self._log("로그인 시 자동 시작은 .app 실행에서만 지원됩니다.", "error")
+                self._log("로그인 시 자동 시작은 지원되는 배포 실행 파일에서만 사용할 수 있습니다.", "error")
                 return
             try:
                 enable_autostart(self._autostart_path)
