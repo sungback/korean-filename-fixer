@@ -51,3 +51,4 @@ git tag vX.X.X && git push origin main && git push origin vX.X.X
 - UI 변경 후 반드시 빌드(`bash build.sh`) 및 앱 실행으로 확인
 - 불필요한 추상화, 미래 대비 설계 금지
 - **요청이 애매하면 추측으로 진행하지 말고 먼저 질문할 것**
+- **자율 모드**: 파일 읽기/수정/빌드/커밋은 확인 없이 바로 진행. git push·태그 push·삭제 등 되돌리기 어려운 작업은 확인 후 진행
