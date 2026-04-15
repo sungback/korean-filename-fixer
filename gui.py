@@ -141,6 +141,9 @@ class App(tk.Tk):
                                   command=self._convert_once)
         self.btn_once.pack(side="left", padx=(0, 6))
 
+        tk.Button(frame, text="로그 지우기",
+                  command=self._clear_log).pack(side="left", padx=(0, 6))
+
     def _build_status_label(self):
         self.status_var = tk.StringVar(value="폴더를 선택하세요.")
         tk.Label(self, textvariable=self.status_var,
@@ -321,6 +324,11 @@ class App(tk.Tk):
         elif result.status == "error":
             visual = nfd_to_visual(result.original)
             self._log(f"✗ {visual}  오류: {result.error}", "error")
+
+    def _clear_log(self):
+        self.log.config(state="normal")
+        self.log.delete("1.0", "end")
+        self.log.config(state="disabled")
 
     def _log(self, msg: str, tag: str = "info"):
         self.log.config(state="normal")
