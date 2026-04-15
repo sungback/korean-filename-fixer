@@ -240,6 +240,7 @@ class App(tk.Tk):
         self.btn_stop.config(state="normal")
         self.status_var.set(f"감시 중: {folder}")
         self._log("감시를 시작했습니다.", "info")
+        self._update_tray_title(watching=True)
 
     def _stop_watch(self):
         self.watcher.stop()
@@ -247,6 +248,7 @@ class App(tk.Tk):
         self.btn_stop.config(state="disabled")
         self.status_var.set("감시가 중지되었습니다.")
         self._log("감시를 중지했습니다.", "info")
+        self._update_tray_title(watching=False)
 
     # ─── 일괄 변환 ────────────────────────────────────────────
 
@@ -303,6 +305,7 @@ class App(tk.Tk):
             self.btn_stop.config(state="normal")
             self.status_var.set(f"감시 중: {folder}")
             self._log("감시 재개", "info")
+            self._update_tray_title(watching=True)
         except Exception as e:
             self._log(f"감시 재개 실패: {e}", "error")
 
@@ -364,10 +367,18 @@ class App(tk.Tk):
             status_bar = NSStatusBar.systemStatusBar()
             self._status_item = status_bar.statusItemWithLength_(
                 NSVariableStatusItemLength)
-            self._status_item.button().setTitle_("K")
+            title = "K●" if self.watcher.is_running else "K"
+            self._status_item.button().setTitle_(title)
             self._status_item.setMenu_(menu)
         except Exception:
             logging.exception("트레이 아이콘 설정 실패")
+
+    def _update_tray_title(self, watching: bool):
+        """감시 상태에 따라 메뉴바 아이콘 텍스트를 변경한다."""
+        if not _APPKIT or not hasattr(self, "_status_item"):
+            return
+        title = "K●" if watching else "K"
+        self._status_item.button().setTitle_(title)
 
     def _show_window(self):
         """메뉴바 또는 독 아이콘 클릭 시 창을 복원한다."""
