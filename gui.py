@@ -64,7 +64,13 @@ def setup_logging():
     )
 
 
-from converter import convert_folder, ConvertResult, nfd_to_visual
+from converter import (
+    DEFAULT_EXCLUDE_PATTERNS,
+    ConvertResult,
+    clean_exclude_patterns,
+    convert_folder,
+    nfd_to_visual,
+)
 from watcher import FolderWatcher
 
 
@@ -79,6 +85,8 @@ class App(tk.Tk):
         self._cmd_queue: queue.Queue = queue.Queue()
         self.watcher = FolderWatcher(callback=self._queue.put)
         self._dark = self._is_dark_mode()
+        self._poll_after_id = None
+        self._shutting_down = False
 
         self._build_ui()
         self._apply_window_constraints()
@@ -109,6 +117,7 @@ class App(tk.Tk):
 
     def _build_ui(self):
         self._build_folder_row()
+        self._build_exclude_row()
         self._build_button_row()
         ttk.Separator(self, orient="horizontal").pack(fill="x", pady=(0, 8))
         self._build_status_label()
@@ -134,6 +143,22 @@ class App(tk.Tk):
         self.folder_var = tk.StringVar()
         tk.Entry(frame, textvariable=self.folder_var,
                  state="readonly").pack(side="left", padx=(6, 4), fill="x", expand=True)
+
+    def _build_exclude_row(self):
+        """제외할 디렉터리 패턴 입력 행을 구성한다."""
+        frame = tk.Frame(self)
+        frame.pack(fill="x", pady=(0, 10))
+
+        tk.Label(frame, text="제외 패턴:").pack(side="left")
+
+        self.exclude_var = tk.StringVar(
+            value=self._format_exclude_patterns(DEFAULT_EXCLUDE_PATTERNS)
+        )
+        entry = tk.Entry(frame, textvariable=self.exclude_var)
+        entry.pack(side="left", padx=(6, 4), fill="x", expand=True)
+        entry.bind("<FocusOut>", self._on_exclude_patterns_changed)
+
+        tk.Label(frame, text="쉼표로 구분", fg="gray").pack(side="right")
 
     def _build_button_row(self):
         """감시 제어 버튼 행을 구성한다."""
@@ -202,12 +227,16 @@ class App(tk.Tk):
         try:
             with open(CONFIG_PATH, encoding="utf-8") as f:
                 data = json.load(f)
+            exclude_patterns = clean_exclude_patterns(
+                data.get("exclude_patterns", DEFAULT_EXCLUDE_PATTERNS)
+            )
+            self.exclude_var.set(self._format_exclude_patterns(exclude_patterns))
             folder = data.get("folder", "")
             if folder and os.path.isdir(folder):
                 self.folder_var.set(folder)
                 self.remember_var.set(True)
-                self.status_var.set("저장된 폴더를 불러왔습니다.")
-            self._start_watch()
+                self.status_var.set("저장된 설정을 불러왔습니다.")
+                self._start_watch()
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
@@ -215,7 +244,10 @@ class App(tk.Tk):
         """체크박스 ON이면 폴더 경로를 저장하고, OFF이면 config 파일을 삭제한다."""
         if self.remember_var.get() and self.folder_var.get():
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump({"folder": self.folder_var.get()}, f)
+                json.dump({
+                    "folder": self.folder_var.get(),
+                    "exclude_patterns": self._get_exclude_patterns(),
+                }, f, ensure_ascii=False)
         else:
             try:
                 os.remove(CONFIG_PATH)
@@ -224,6 +256,34 @@ class App(tk.Tk):
 
     def _on_remember_toggle(self):
         self._save_config()
+
+    def _get_exclude_patterns(self) -> list[str]:
+        return clean_exclude_patterns(self.exclude_var.get().split(","))
+
+    def _format_exclude_patterns(self, patterns) -> str:
+        return ", ".join(clean_exclude_patterns(patterns))
+
+    def _exclude_patterns_text(self) -> str:
+        patterns = self._get_exclude_patterns()
+        return ", ".join(patterns) if patterns else "없음"
+
+    def _on_exclude_patterns_changed(self, _event=None):
+        normalized = self._format_exclude_patterns(self._get_exclude_patterns())
+        if self.exclude_var.get().strip() != normalized:
+            self.exclude_var.set(normalized)
+
+        if self.remember_var.get() and self.folder_var.get():
+            self._save_config()
+
+        if self.watcher.is_running:
+            folder = self.folder_var.get()
+            try:
+                self.watcher.start(folder, self._get_exclude_patterns())
+                self.status_var.set(f"감시 중: {folder}")
+                self._log(f"제외 패턴 적용: {self._exclude_patterns_text()}", "info")
+            except Exception as e:
+                self.status_var.set(f"제외 패턴 적용 실패: {e}")
+                self._log(f"제외 패턴 적용 실패: {e}", "error")
 
     # ─── 폴더 선택 및 감시 제어 ──────────────────────────────
 
@@ -241,8 +301,9 @@ class App(tk.Tk):
         if not folder:
             self.status_var.set("먼저 폴더를 선택하세요.")
             return
+        exclude_patterns = self._get_exclude_patterns()
         try:
-            self.watcher.start(folder)
+            self.watcher.start(folder, exclude_patterns)
         except Exception as e:
             self.status_var.set(f"감시 시작 실패: {e}")
             self._log(f"오류: {e}", "error")
@@ -250,7 +311,7 @@ class App(tk.Tk):
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
         self.status_var.set(f"감시 중: {folder}")
-        self._log("감시를 시작했습니다.", "info")
+        self._log(f"감시를 시작했습니다. (제외: {self._exclude_patterns_text()})", "info")
         self._update_tray_title(watching=True)
         self._update_tray_menu_state(watching=True)
 
@@ -282,15 +343,16 @@ class App(tk.Tk):
         if was_watching:
             self.watcher.stop()
 
+        exclude_patterns = self._get_exclude_patterns()
         threading.Thread(
             target=self._run_batch_convert,
-            args=(folder, was_watching),
+            args=(folder, was_watching, exclude_patterns),
             daemon=True,
         ).start()
 
-    def _run_batch_convert(self, folder: str, resume_watch: bool):
+    def _run_batch_convert(self, folder: str, resume_watch: bool, exclude_patterns: list[str]):
         """백그라운드 스레드에서 일괄 변환을 실행하고 결과를 메인 스레드에 전달한다."""
-        results = convert_folder(folder)
+        results = convert_folder(folder, exclude_patterns=exclude_patterns)
         self.after(0, self._on_batch_done, results, folder, resume_watch)
 
     def _on_batch_done(self, results: list, folder: str, resume_watch: bool):
@@ -313,11 +375,11 @@ class App(tk.Tk):
 
     def _resume_watch(self, folder: str):
         try:
-            self.watcher.start(folder)
+            self.watcher.start(folder, self._get_exclude_patterns())
             self.btn_start.config(state="disabled")
             self.btn_stop.config(state="normal")
             self.status_var.set(f"감시 중: {folder}")
-            self._log("감시 재개", "info")
+            self._log(f"감시 재개 (제외: {self._exclude_patterns_text()})", "info")
             self._update_tray_title(watching=True)
             self._update_tray_menu_state(watching=True)
         except Exception as e:
@@ -327,6 +389,9 @@ class App(tk.Tk):
 
     def _poll_queue(self):
         """100ms마다 큐를 비워 감시 스레드의 변환 결과를 로그에 표시한다."""
+        if self._shutting_down:
+            self._poll_after_id = None
+            return
         try:
             while True:
                 self._log_result(self._queue.get_nowait())
@@ -339,9 +404,13 @@ class App(tk.Tk):
                     self._start_watch()
                 elif cmd == "stop":
                     self._stop_watch()
+                elif cmd == "show":
+                    self._show_window()
+                elif cmd == "quit":
+                    self._quit_app()
         except queue.Empty:
             pass
-        self.after(100, self._poll_queue)
+        self._poll_after_id = self.after(100, self._poll_queue)
 
     def _log_result(self, result: ConvertResult):
         if result.status == "converted":
@@ -374,8 +443,8 @@ class App(tk.Tk):
             return
         try:
             self._tray_delegate = _TrayDelegate.alloc().init()
-            self._tray_delegate._show_cb = self._show_window
-            self._tray_delegate._quit_cb = self._quit_app
+            self._tray_delegate._show_cb = lambda: self._cmd_queue.put("show")
+            self._tray_delegate._quit_cb = lambda: self._cmd_queue.put("quit")
             # ObjC 콜백은 별도 스레드에서 실행되므로 큐에만 넣고 메인 스레드가 처리한다
             self._tray_delegate._start_cb = lambda: self._cmd_queue.put("start")
             self._tray_delegate._stop_cb = lambda: self._cmd_queue.put("stop")
@@ -437,13 +506,22 @@ class App(tk.Tk):
 
     def _quit_app(self):
         """감시 중지 → 메뉴바 아이콘 제거 → 창 종료."""
+        if self._shutting_down:
+            return
+        self._shutting_down = True
         self.watcher.stop()
+        if self._poll_after_id is not None:
+            try:
+                self.after_cancel(self._poll_after_id)
+            except Exception:
+                pass
+            self._poll_after_id = None
         try:
             if hasattr(self, "_status_item"):
                 NSStatusBar.systemStatusBar().removeStatusItem_(self._status_item)
         except Exception:
             pass
-        self.after(0, self.destroy)
+        self.destroy()
 
     def on_close(self):
         """창 닫기(X) 시 메뉴바로 숨긴다. 종료는 메뉴바 '종료' 사용."""

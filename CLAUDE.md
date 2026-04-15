@@ -6,10 +6,10 @@ macOS에서 한글 파일명을 NFD → NFC로 변환해 Windows/Linux와의 호
 ## 기술 스택
 - **언어**: Python 3.12
 - **GUI**: tkinter (scrolledtext, ttk)
-- **파일 감시**: watchdog (FSEventsObserver → PollingObserver 폴백)
+- **파일 감시**: watchdog (`Observer`, macOS에서는 FSEvents 기반 / PollingObserver 폴백)
 - **tray 아이콘**: AppKit (pyobjc), macOS 전용
 - **빌드**: PyInstaller → `bash build.sh`
-- **플랫폼**: macOS 전용
+- **플랫폼**: macOS 중심 (GitHub Actions에서 Windows 보조 빌드도 생성)
 
 ## 파일 구조
 | 파일 | 역할 |
@@ -30,6 +30,7 @@ bash build.sh
 - **NFD 변환 전략**: 단순 `os.rename(NFD→NFC)` 은 macOS HFS+가 동일하게 취급해 Google Drive가 감지 못함
   - 파일: `copy2 → 삭제 → rename` (Drive가 삭제+생성으로 인식)
   - 폴더: 임시 이름 경유 2단계 rename
+- **제외 패턴**: `.git`, `node_modules` 등 디렉터리 패턴은 일괄 변환과 실시간 감시 모두에서 공통 적용
 - **이벤트 중복 방지**: FSEvents가 동일 파일 이벤트를 연속 발생시키므로 `_DEDUP_WINDOW=0.2s` 적용
 - **스레드 안전**: GUI 업데이트는 Queue → `after(100ms)` 폴링으로 메인 스레드에서만 처리
 - **경로 정규화**: FSEventsObserver가 경로를 NFC로 반환할 수 있어 `os.scandir`로 실제 NFD 경로를 재탐색
@@ -41,7 +42,7 @@ bash build.sh
 git tag vX.X.X && git push origin main && git push origin vX.X.X
 ```
 
-- 태그 규칙: `v{major}.{minor}.{patch}` — 최신 `v1.4.0`
+- 태그 규칙: `v{major}.{minor}.{patch}` — 최신 `v1.5.0`
 - 기능 추가: minor 버전 업, 버그 수정/리팩토링: patch 버전 업
 - **소스 기능 변경이 없을 때(문서, 설정 등)는 태그 없이 push만**
 

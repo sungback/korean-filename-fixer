@@ -14,6 +14,7 @@ import time
 import unicodedata
 import uuid
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 
 
 @dataclass
@@ -26,6 +27,7 @@ class ConvertResult:
 
 
 _IGNORED_TEMP_NAME_RE = re.compile(r"\.sb-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+$")
+DEFAULT_EXCLUDE_PATTERNS = (".git", "node_modules")
 
 
 def is_nfd(name: str) -> bool:
@@ -38,6 +40,40 @@ def should_ignore_name(name: str) -> bool:
     if name.startswith("__nfc_tmp_") and name.endswith("__"):
         return True
     return _IGNORED_TEMP_NAME_RE.search(name) is not None
+
+
+def clean_exclude_patterns(patterns) -> list[str]:
+    """빈 값과 중복을 제거한 제외 패턴 목록을 반환한다."""
+    cleaned = []
+    seen = set()
+    for pattern in patterns or []:
+        value = str(pattern).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        cleaned.append(value)
+    return cleaned
+
+
+def should_exclude_path(path: str, exclude_patterns, is_directory: bool | None = None) -> bool:
+    """경로 중 포함된 디렉터리명이 제외 패턴과 일치하면 True를 반환한다."""
+    patterns = clean_exclude_patterns(exclude_patterns)
+    if not patterns:
+        return False
+
+    normalized = os.path.normpath(path)
+    parts = [part for part in normalized.split(os.sep) if part and part != os.curdir]
+    if not parts:
+        return False
+
+    if is_directory is None:
+        is_directory = os.path.isdir(path)
+    dir_parts = parts if is_directory else parts[:-1]
+
+    for part in dir_parts:
+        if any(fnmatchcase(part, pattern) for pattern in patterns):
+            return True
+    return False
 
 
 def _build_jamo_map() -> dict[int, int]:
@@ -140,15 +176,30 @@ def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> 
     return ConvertResult(filepath, name, nfc_name, "error", msg)
 
 
-def convert_folder(folder: str) -> list[ConvertResult]:
+def convert_folder(folder: str, exclude_patterns=None) -> list[ConvertResult]:
     """폴더 하위의 모든 파일/폴더명을 NFD → NFC로 변환한다.
 
     깊은 경로부터 처리해 상위 폴더 rename 시 하위 경로가 무효화되는 것을 방지한다.
     """
+    exclude_patterns = clean_exclude_patterns(exclude_patterns)
+    if should_exclude_path(folder, exclude_patterns, is_directory=True):
+        logging.info(f"Skipped excluded folder: {folder}")
+        return []
+
     all_entries = []
     for root, dirs, files in os.walk(folder):
+        # 제외 디렉터리는 하위 탐색 자체를 막아 이벤트/변환 비용을 줄인다.
+        dirs[:] = [
+            name for name in dirs
+            if not should_exclude_path(
+                os.path.join(root, name), exclude_patterns, is_directory=True
+            )
+        ]
         for name in files:
-            all_entries.append(os.path.join(root, name))
+            path = os.path.join(root, name)
+            if should_exclude_path(path, exclude_patterns, is_directory=False):
+                continue
+            all_entries.append(path)
         for name in dirs:
             all_entries.append(os.path.join(root, name))
 
@@ -160,6 +211,8 @@ def convert_folder(folder: str) -> list[ConvertResult]:
         if not os.path.exists(entry):
             continue
         if should_ignore_name(os.path.basename(entry)):
+            continue
+        if should_exclude_path(entry, exclude_patterns):
             continue
         results.append(convert_file(entry))
 
