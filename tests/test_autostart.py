@@ -76,8 +76,9 @@ class AutostartTests(unittest.TestCase):
             self.assertFalse(os.path.exists(plist_path))
 
     def test_build_launch_agent_plist_uses_expected_arguments(self):
-        plist = build_launch_agent_plist("/Applications/Test.app/Contents/MacOS/Test")
-        self.assertEqual(plist["ProgramArguments"], ["/Applications/Test.app/Contents/MacOS/Test"])
+        executable = "/Applications/Test.app/Contents/MacOS/Test"
+        plist = build_launch_agent_plist(executable)
+        self.assertEqual(plist["ProgramArguments"], [os.path.abspath(executable)])
         self.assertTrue(plist["RunAtLoad"])
 
 
