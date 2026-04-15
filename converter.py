@@ -22,7 +22,7 @@ class ConvertResult:
     path: str       # 변환 후 실제 경로 (실패 시 원본 경로)
     original: str   # 변환 전 파일명
     converted: str  # 변환 후 파일명
-    status: str     # "converted" | "skipped" | "error"
+    status: str     # "converted" | "preview" | "conflict" | "skipped" | "error"
     error: str = ""
 
 
@@ -136,8 +136,24 @@ def _rename_file(src: str, tmp: str, dst: str):
     os.rename(tmp, dst)
 
 
-def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> ConvertResult:
-    """파일/폴더 1개를 NFD → NFC로 변환한다. 이미 NFC면 'skipped'를 반환한다."""
+def _find_conflicting_entry(filepath: str, converted_name: str) -> str:
+    """같은 디렉터리에 목표 NFC 이름과 충돌하는 다른 엔트리가 있으면 그 이름을 반환한다."""
+    dirpath = os.path.dirname(filepath)
+    original_name = os.path.basename(filepath)
+    try:
+        with os.scandir(dirpath) as entries:
+            for entry in entries:
+                if entry.name == original_name:
+                    continue
+                if unicodedata.normalize('NFC', entry.name) == converted_name:
+                    return entry.name
+    except OSError:
+        pass
+    return ""
+
+
+def plan_file(filepath: str) -> ConvertResult:
+    """파일/폴더 1개의 변환 계획만 계산한다. 실제 파일 변경은 하지 않는다."""
     dirpath = os.path.dirname(filepath)
     name = os.path.basename(filepath)
 
@@ -146,6 +162,32 @@ def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> 
 
     nfc_name = unicodedata.normalize('NFC', name)
     new_path = os.path.join(dirpath, nfc_name)
+    conflict_name = _find_conflicting_entry(filepath, nfc_name)
+    if conflict_name:
+        return ConvertResult(
+            filepath,
+            name,
+            nfc_name,
+            "conflict",
+            f"{conflict_name} 이미 존재",
+        )
+    return ConvertResult(new_path, name, nfc_name, "preview")
+
+
+def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> ConvertResult:
+    """파일/폴더 1개를 NFD → NFC로 변환한다. 이미 NFC면 'skipped'를 반환한다."""
+    plan = plan_file(filepath)
+    dirpath = os.path.dirname(filepath)
+    name = plan.original
+    nfc_name = plan.converted
+    new_path = plan.path
+
+    if plan.status == "skipped":
+        return plan
+    if plan.status == "conflict":
+        logging.error(f"Conflict converting {filepath}: {plan.error}")
+        return ConvertResult(filepath, name, nfc_name, "error", plan.error)
+
     # UUID로 tmp 경로를 고유하게 만들어 동시 변환 시 충돌을 방지한다
     tmp_path = os.path.join(dirpath, f"__nfc_tmp_{uuid.uuid4().hex[:8]}__")
 
@@ -178,11 +220,8 @@ def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> 
     return ConvertResult(filepath, name, nfc_name, "error", msg)
 
 
-def convert_folder(folder: str, exclude_patterns=None) -> list[ConvertResult]:
-    """폴더 하위의 모든 파일/폴더명을 NFD → NFC로 변환한다.
-
-    깊은 경로부터 처리해 상위 폴더 rename 시 하위 경로가 무효화되는 것을 방지한다.
-    """
+def _collect_entries(folder: str, exclude_patterns=None) -> list[str]:
+    """제외 패턴을 적용해 변환 후보 경로를 수집한다."""
     exclude_patterns = clean_exclude_patterns(exclude_patterns)
     if should_exclude_path(folder, exclude_patterns, is_directory=True):
         logging.info(f"Skipped excluded folder: {folder}")
@@ -207,6 +246,27 @@ def convert_folder(folder: str, exclude_patterns=None) -> list[ConvertResult]:
 
     # 깊은 경로(구분자 수가 많은 것)를 먼저 처리
     all_entries.sort(key=lambda p: p.count(os.sep), reverse=True)
+    return all_entries
+
+
+def preview_folder(folder: str, exclude_patterns=None) -> list[ConvertResult]:
+    """폴더 하위의 모든 파일/폴더명을 스캔해 변환 예정 목록만 계산한다."""
+    results = []
+    for entry in _collect_entries(folder, exclude_patterns):
+        if not os.path.exists(entry):
+            continue
+        if should_ignore_name(os.path.basename(entry)):
+            continue
+        results.append(plan_file(entry))
+    return results
+
+
+def convert_folder(folder: str, exclude_patterns=None) -> list[ConvertResult]:
+    """폴더 하위의 모든 파일/폴더명을 NFD → NFC로 변환한다.
+
+    깊은 경로부터 처리해 상위 폴더 rename 시 하위 경로가 무효화되는 것을 방지한다.
+    """
+    all_entries = _collect_entries(folder, exclude_patterns)
 
     results = []
     for entry in all_entries:

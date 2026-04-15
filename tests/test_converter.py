@@ -2,12 +2,15 @@ import os
 import tempfile
 import unicodedata
 import unittest
+from unittest.mock import patch
 
 from converter import (
     clean_exclude_patterns,
     convert_file,
     convert_folder,
     is_nfd,
+    plan_file,
+    preview_folder,
     should_exclude_path,
 )
 
@@ -70,6 +73,46 @@ class ConverterTests(unittest.TestCase):
             self.assertTrue(os.path.exists(excluded_path))
             excluded_names = [entry.name for entry in os.scandir(excluded_dir)]
             self.assertTrue(any(is_nfd(name) for name in excluded_names))
+
+    def test_plan_file_returns_preview_for_convertible_nfd_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_path = os.path.join(tmp, nfd_name("미리보기.txt"))
+            with open(original_path, "w", encoding="utf-8") as f:
+                f.write("preview")
+
+            result = plan_file(original_path)
+
+            self.assertEqual(result.status, "preview")
+            self.assertEqual(result.converted, "미리보기.txt")
+            self.assertTrue(os.path.exists(original_path))
+
+    def test_plan_file_reports_conflict_when_target_name_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_path = os.path.join(tmp, nfd_name("한글.txt"))
+            with open(original_path, "w", encoding="utf-8") as f:
+                f.write("content")
+
+            with patch("converter._find_conflicting_entry", return_value="한글.txt"):
+                result = plan_file(original_path)
+
+            self.assertEqual(result.status, "conflict")
+            self.assertIn("이미 존재", result.error)
+
+    def test_preview_folder_reports_preview_and_skipped_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            preview_path = os.path.join(tmp, nfd_name("예정.txt"))
+            skipped_path = os.path.join(tmp, "already-nfc.txt")
+
+            with open(preview_path, "w", encoding="utf-8") as f:
+                f.write("preview")
+            with open(skipped_path, "w", encoding="utf-8") as f:
+                f.write("skip")
+
+            results = preview_folder(tmp)
+            statuses = {result.converted: result.status for result in results}
+
+            self.assertEqual(statuses["예정.txt"], "preview")
+            self.assertEqual(statuses["already-nfc.txt"], "skipped")
 
 
 if __name__ == "__main__":

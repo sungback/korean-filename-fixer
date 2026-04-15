@@ -70,6 +70,7 @@ from converter import (
     clean_exclude_patterns,
     convert_folder,
     nfd_to_visual,
+    preview_folder,
 )
 from watcher import FolderWatcher
 
@@ -109,9 +110,11 @@ class App(tk.Tk):
         """다크/라이트 모드에 따른 로그 색상을 반환한다."""
         if self._dark:
             return {"bg": "#1e1e1e", "fg": "#dddddd",
-                    "converted": "#66ff66", "error": "#ff6666"}
+                    "converted": "#66ff66", "preview": "#66ccff",
+                    "conflict": "#ffb366", "error": "#ff6666"}
         return {"bg": "#ffffff", "fg": "#333333",
-                "converted": "#007700", "error": "#cc0000"}
+                "converted": "#007700", "preview": "#005fcc",
+                "conflict": "#b35a00", "error": "#cc0000"}
 
     # ─── UI 구성 ──────────────────────────────────────────────
 
@@ -173,6 +176,10 @@ class App(tk.Tk):
                                   state="disabled", command=self._stop_watch)
         self.btn_stop.pack(side="left", padx=(0, 6))
 
+        self.btn_preview = tk.Button(frame, text="변환 미리보기",
+                                     command=self._preview_once)
+        self.btn_preview.pack(side="left", padx=(0, 6))
+
         self.btn_once = tk.Button(frame, text="기존 파일들 한 번에 변환",
                                   command=self._convert_once)
         self.btn_once.pack(side="left", padx=(0, 6))
@@ -197,6 +204,8 @@ class App(tk.Tk):
         self.log.pack(fill="both", expand=True)
 
         self.log.tag_config("converted", foreground=colors["converted"])
+        self.log.tag_config("preview",   foreground=colors["preview"])
+        self.log.tag_config("conflict",  foreground=colors["conflict"])
         self.log.tag_config("error",     foreground=colors["error"])
         self.log.tag_config("info",      foreground=colors["fg"])
 
@@ -326,6 +335,32 @@ class App(tk.Tk):
 
     # ─── 일괄 변환 ────────────────────────────────────────────
 
+    def _preview_once(self):
+        """폴더 전체를 스캔해 변환 예정 결과만 표시한다."""
+        folder = self.folder_var.get()
+        if not folder:
+            self.status_var.set("먼저 폴더를 선택하세요.")
+            return
+
+        self.status_var.set("미리보기 중...")
+        self.btn_preview.config(state="disabled")
+
+        was_watching = self.watcher.is_running
+        if was_watching:
+            self.watcher.stop()
+
+        exclude_patterns = self._get_exclude_patterns()
+        threading.Thread(
+            target=self._run_preview,
+            args=(folder, was_watching, exclude_patterns),
+            daemon=True,
+        ).start()
+
+    def _run_preview(self, folder: str, resume_watch: bool, exclude_patterns: list[str]):
+        """백그라운드 스레드에서 미리보기를 계산하고 결과를 메인 스레드에 전달한다."""
+        results = preview_folder(folder, exclude_patterns=exclude_patterns)
+        self.after(0, self._on_preview_done, results, folder, resume_watch)
+
     def _convert_once(self):
         """폴더 전체를 한 번 스캔해서 변환한다.
 
@@ -373,6 +408,25 @@ class App(tk.Tk):
         if resume_watch:
             self._resume_watch(folder)
 
+    def _on_preview_done(self, results: list, folder: str, resume_watch: bool):
+        """미리보기 완료 후 결과를 표시하고 필요하면 감시를 재개한다."""
+        previews = [r for r in results if r.status == "preview"]
+        conflicts = [r for r in results if r.status == "conflict"]
+        skipped = [r for r in results if r.status == "skipped"]
+
+        for r in results:
+            self._log_result(r)
+
+        summary = (f"미리보기 완료 — 예정: {len(previews)}개 / "
+                   f"충돌: {len(conflicts)}개 / "
+                   f"건너뜀: {len(skipped)}개")
+        self.status_var.set(summary)
+        self._log(summary, "info")
+        self.btn_preview.config(state="normal")
+
+        if resume_watch:
+            self._resume_watch(folder)
+
     def _resume_watch(self, folder: str):
         try:
             self.watcher.start(folder, self._get_exclude_patterns())
@@ -416,6 +470,12 @@ class App(tk.Tk):
         if result.status == "converted":
             visual = nfd_to_visual(result.original)
             self._log(f"✓ {visual}  →  {result.converted}", "converted")
+        elif result.status == "preview":
+            visual = nfd_to_visual(result.original)
+            self._log(f"→ {visual}  →  {result.converted}", "preview")
+        elif result.status == "conflict":
+            visual = nfd_to_visual(result.original)
+            self._log(f"! {visual}  충돌: {result.error}", "conflict")
         elif result.status == "error":
             visual = nfd_to_visual(result.original)
             self._log(f"✗ {visual}  오류: {result.error}", "error")

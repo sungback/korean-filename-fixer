@@ -30,6 +30,7 @@ bash build.sh
 - **NFD 변환 전략**: 단순 `os.rename(NFD→NFC)` 은 macOS HFS+가 동일하게 취급해 Google Drive가 감지 못함
   - 파일: `copy2 → 삭제 → rename` (Drive가 삭제+생성으로 인식)
   - 폴더: 임시 이름 경유 2단계 rename
+- **미리보기(드라이런)**: 실제 변환 전에 예정 이름과 충돌 여부를 계산해 로그로 확인 가능
 - **제외 패턴**: `.git`, `node_modules` 등 디렉터리 패턴은 일괄 변환과 실시간 감시 모두에서 공통 적용
 - **이벤트 중복 방지**: FSEvents가 동일 파일 이벤트를 연속 발생시키므로 `_DEDUP_WINDOW=0.2s` 적용
 - **스레드 안전**: GUI 업데이트는 Queue → `after(100ms)` 폴링으로 메인 스레드에서만 처리
