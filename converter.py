@@ -185,8 +185,8 @@ def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> 
     if plan.status == "skipped":
         return plan
     if plan.status == "conflict":
-        logging.error(f"Conflict converting {filepath}: {plan.error}")
-        return ConvertResult(filepath, name, nfc_name, "error", plan.error)
+        logging.warning(f"Conflict converting {filepath}: {plan.error}")
+        return plan
 
     # UUID로 tmp 경로를 고유하게 만들어 동시 변환 시 충돌을 방지한다
     tmp_path = os.path.join(dirpath, f"__nfc_tmp_{uuid.uuid4().hex[:8]}__")

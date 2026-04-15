@@ -393,14 +393,17 @@ class App(tk.Tk):
     def _on_batch_done(self, results: list, folder: str, resume_watch: bool):
         """일괄 변환 완료 후 결과를 표시하고 필요하면 감시를 재개한다."""
         converted = [r for r in results if r.status == "converted"]
+        conflicts = [r for r in results if r.status == "conflict"]
         errors    = [r for r in results if r.status == "error"]
+        skipped   = [r for r in results if r.status == "skipped"]
 
         for r in results:
             self._log_result(r)
 
         summary = (f"완료 — 변환: {len(converted)}개 / "
+                   f"충돌: {len(conflicts)}개 / "
                    f"오류: {len(errors)}개 / "
-                   f"건너뜀: {len(results)-len(converted)-len(errors)}개")
+                   f"건너뜀: {len(skipped)}개")
         self.status_var.set(summary)
         self._log(summary, "info")
         self.btn_once.config(state="normal")

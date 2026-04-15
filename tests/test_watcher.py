@@ -2,7 +2,9 @@ import os
 import tempfile
 import unicodedata
 import unittest
+from unittest.mock import patch
 
+from converter import ConvertResult
 from watcher import NFDHandler
 
 
@@ -52,6 +54,28 @@ class WatcherTests(unittest.TestCase):
 
             self.assertEqual(captured, [])
             self.assertTrue(os.path.exists(original_path))
+
+    def test_handle_passes_conflict_result_to_callback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            captured = []
+            handler = NFDHandler(captured.append)
+
+            original_path = os.path.join(tmp, nfd_name("충돌.txt"))
+            with open(original_path, "w", encoding="utf-8") as f:
+                f.write("conflict")
+
+            conflict_result = ConvertResult(
+                original_path,
+                os.path.basename(original_path),
+                "충돌.txt",
+                "conflict",
+                "충돌.txt 이미 존재",
+            )
+            with patch("watcher.convert_file", return_value=conflict_result):
+                handler._handle(original_path, is_directory=False)
+
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0].status, "conflict")
 
     def test_is_duplicate_returns_true_for_repeated_path_within_window(self):
         handler = NFDHandler(lambda result: None)

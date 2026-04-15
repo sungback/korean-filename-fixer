@@ -98,6 +98,19 @@ class ConverterTests(unittest.TestCase):
             self.assertEqual(result.status, "conflict")
             self.assertIn("이미 존재", result.error)
 
+    def test_convert_file_preserves_conflict_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_path = os.path.join(tmp, nfd_name("충돌.txt"))
+            with open(original_path, "w", encoding="utf-8") as f:
+                f.write("content")
+
+            with patch("converter._find_conflicting_entry", return_value="충돌.txt"):
+                result = convert_file(original_path)
+
+            self.assertEqual(result.status, "conflict")
+            self.assertIn("이미 존재", result.error)
+            self.assertTrue(os.path.exists(original_path))
+
     def test_preview_folder_reports_preview_and_skipped_results(self):
         with tempfile.TemporaryDirectory() as tmp:
             preview_path = os.path.join(tmp, nfd_name("예정.txt"))
