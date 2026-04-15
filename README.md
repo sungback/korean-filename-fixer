@@ -16,6 +16,7 @@ Windows나 Linux는 **NFC(Normalization Form C)** 를 사용하기 때문에, ma
 | **실시간 감시** | 폴더를 감시하다가 NFD 파일이 생성/이동되면 자동 변환 |
 | **재귀 처리** | 하위 폴더까지 모두 탐색, 깊은 경로부터 처리해 rename 충돌 방지 |
 | **변환 로그** | 변환 성공·오류·건너뜀 결과를 컬러 로그로 표시 |
+| **메뉴바 상주** | X 버튼으로 닫아도 macOS 메뉴바에 상주하며 감시 유지 |
 
 ## 프로젝트 구조
 
@@ -26,8 +27,7 @@ korean-filename-fixer/
 ├── converter.py     # NFD→NFC 변환 로직 (ConvertResult, convert_folder 등)
 ├── watcher.py       # watchdog 기반 실시간 폴더 감시 (FolderWatcher)
 ├── build.sh         # PyInstaller macOS .app 빌드 스크립트
-├── requirements.txt # 의존성 목록
-└── KoreanFilenameFixer.spec  # PyInstaller 스펙 파일
+└── requirements.txt # 의존성 목록
 ```
 
 ## 설치 및 실행
@@ -55,7 +55,13 @@ python main.py
 bash build.sh
 ```
 
-빌드가 완료되면 `dist/KoreanFilenameFixer` 실행 파일이 생성됩니다.
+빌드가 완료되면 다음 파일들이 생성됩니다.
+
+```
+dist/KoreanFilenameFixer          # 실행 파일
+dist/KoreanFilenameFixer.app      # 앱 번들
+dist/KoreanFilenameFixer.app.zip  # 배포용 zip (codesign 기준)
+```
 
 > **첫 실행 시 Gatekeeper 경고가 뜨는 경우:**
 > 시스템 설정 → 개인 정보 보호 및 보안 → '확인 없이 열기' 클릭
@@ -64,9 +70,10 @@ bash build.sh
 ## 사용 방법
 
 1. 앱 실행 후 **[선택]** 버튼으로 대상 폴더를 지정합니다.
-2. **[한 번 변환]** — 폴더 전체를 즉시 스캔하여 NFD 파일명을 NFC로 변환합니다.
-3. **[▶ 감시 시작]** — 백그라운드에서 폴더를 감시하며, 새 파일이 추가될 때마다 자동 변환합니다.
+2. **[기존 파일들 한 번에 변환]** — 폴더 전체를 즉시 스캔하여 NFD 파일명을 NFC로 변환합니다.
+3. **[▶ 폴더 감시 시작]** — 백그라운드에서 폴더를 감시하며, 새 파일이 추가될 때마다 자동 변환합니다.
 4. **[■ 중지]** — 실시간 감시를 종료합니다.
+5. 창의 **X 버튼**을 누르면 종료가 아닌 메뉴바로 숨겨집니다. 완전 종료는 메뉴바 아이콘 → **종료** 를 사용합니다.
 
 ## 의존성
 

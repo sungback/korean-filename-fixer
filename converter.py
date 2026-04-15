@@ -40,22 +40,31 @@ def should_ignore_name(name: str) -> bool:
     return _IGNORED_TEMP_NAME_RE.search(name) is not None
 
 
-# 초성(U+1100~U+1112), 중성(U+1161~U+1175), 종성(U+11A8~U+11C2) →
-# 호환 자모(U+3131~U+3163) 매핑 테이블
-_JAMO_TO_COMPAT: dict[int, int] = {}
+def _build_jamo_map() -> dict[int, int]:
+    """초성·중성·종성 Hangul Jamo(U+1100~) → Compatibility Jamo(U+3131~) 매핑을 반환한다.
 
-_CHO  = [0x3131,0x3132,0x3134,0x3137,0x3138,0x3139,0x3141,0x3142,0x3143,
-         0x3145,0x3146,0x3147,0x3148,0x3149,0x314A,0x314B,0x314C,0x314D,0x314E]
-_JONG = [0x3131,0x3132,0x3133,0x3134,0x3135,0x3136,0x3137,0x3139,0x313A,
-         0x313B,0x313C,0x313D,0x313E,0x313F,0x3140,0x3141,0x3142,0x3144,
-         0x3145,0x3146,0x3147,0x3148,0x314A,0x314B,0x314C,0x314D,0x314E]
+    macOS NFD는 Hangul Jamo 영역 코드포인트를 사용하는데, 폰트가 이를 합쳐
+    렌더링해 눈에 보이지 않는다. Compatibility Jamo로 바꾸면 분리된 자모로 표시된다.
+    """
+    # 초성 19자 (U+1100~U+1112)
+    cho = [0x3131, 0x3132, 0x3134, 0x3137, 0x3138, 0x3139, 0x3141, 0x3142, 0x3143,
+           0x3145, 0x3146, 0x3147, 0x3148, 0x3149, 0x314A, 0x314B, 0x314C, 0x314D, 0x314E]
+    # 종성 27자 (U+11A8~U+11C2)
+    jong = [0x3131, 0x3132, 0x3133, 0x3134, 0x3135, 0x3136, 0x3137, 0x3139, 0x313A,
+            0x313B, 0x313C, 0x313D, 0x313E, 0x313F, 0x3140, 0x3141, 0x3142, 0x3144,
+            0x3145, 0x3146, 0x3147, 0x3148, 0x314A, 0x314B, 0x314C, 0x314D, 0x314E]
 
-for _i, _c in enumerate(_CHO):
-    _JAMO_TO_COMPAT[0x1100 + _i] = _c          # 초성
-for _i in range(21):
-    _JAMO_TO_COMPAT[0x1161 + _i] = 0x314F + _i  # 중성
-for _i, _c in enumerate(_JONG):
-    _JAMO_TO_COMPAT[0x11A8 + _i] = _c           # 종성
+    mapping: dict[int, int] = {}
+    for i, c in enumerate(cho):
+        mapping[0x1100 + i] = c           # 초성
+    for i in range(21):
+        mapping[0x1161 + i] = 0x314F + i  # 중성 21자 (U+1161~U+1175)
+    for i, c in enumerate(jong):
+        mapping[0x11A8 + i] = c           # 종성
+    return mapping
+
+
+_JAMO_TO_COMPAT = _build_jamo_map()
 
 
 def nfd_to_visual(name: str) -> str:
@@ -68,21 +77,33 @@ def nfd_to_visual(name: str) -> str:
     return ''.join(chr(_JAMO_TO_COMPAT.get(ord(c), ord(c))) for c in name)
 
 
-def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> ConvertResult:
-    """
-    파일/폴더 1개를 NFD → NFC로 변환한다. 이미 NFC면 'skipped'를 반환한다.
+def _rename_dir(src: str, tmp: str, dst: str):
+    """폴더를 NFD→NFC로 rename한다.
 
-    단순 os.rename(NFD→NFC)은 macOS 파일시스템이 두 이름을 동일하게 취급해
-    Google Drive 동기화 클라이언트가 변경을 감지하지 못한다.
-    파일은 copy2→삭제→rename, 폴더는 2단계 rename으로 처리한다.
+    macOS HFS+는 NFD↔NFC를 동일하게 취급하므로 임시 이름을 중간에 거쳐
+    파일시스템이 두 이름을 별개로 인식하도록 강제한다.
     """
+    os.rename(src, tmp)
+    os.rename(tmp, dst)
+
+
+def _rename_file(src: str, tmp: str, dst: str):
+    """파일을 NFD→NFC로 rename한다.
+
+    copy2 → 원본 삭제 → rename 순서로 처리하면 Google Drive가
+    삭제(NFD) + 생성(NFC) 이벤트로 인식해 서버에도 NFC 이름이 반영된다.
+    """
+    shutil.copy2(src, tmp)
+    os.remove(src)
+    os.rename(tmp, dst)
+
+
+def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> ConvertResult:
+    """파일/폴더 1개를 NFD → NFC로 변환한다. 이미 NFC면 'skipped'를 반환한다."""
     dirpath = os.path.dirname(filepath)
     name = os.path.basename(filepath)
 
-    if should_ignore_name(name):
-        return ConvertResult(filepath, name, name, "skipped")
-
-    if not is_nfd(name):
+    if should_ignore_name(name) or not is_nfd(name):
         return ConvertResult(filepath, name, name, "skipped")
 
     nfc_name = unicodedata.normalize('NFC', name)
@@ -93,14 +114,9 @@ def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> 
     for attempt in range(retry):
         try:
             if os.path.isdir(filepath):
-                # 폴더: NFD↔NFC 동일 취급 우회를 위해 중간 이름을 거친다
-                os.rename(filepath, tmp_path)
-                os.rename(tmp_path, new_path)
+                _rename_dir(filepath, tmp_path, new_path)
             else:
-                # 파일: Google Drive가 삭제(NFD)+생성(NFC)으로 인식해 서버에도 NFC로 반영된다
-                shutil.copy2(filepath, tmp_path)
-                os.remove(filepath)
-                os.rename(tmp_path, new_path)
+                _rename_file(filepath, tmp_path, new_path)
 
             logging.info(f"Converted: {name!r} → {nfc_name!r}")
             return ConvertResult(new_path, name, nfc_name, "converted")
@@ -125,9 +141,9 @@ def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> 
 
 
 def convert_folder(folder: str) -> list[ConvertResult]:
-    """
-    폴더 하위의 모든 파일/폴더명을 NFD → NFC로 변환한다.
-    깊은 경로부터 처리해 상위 폴더 rename 시 경로 충돌을 방지한다.
+    """폴더 하위의 모든 파일/폴더명을 NFD → NFC로 변환한다.
+
+    깊은 경로부터 처리해 상위 폴더 rename 시 하위 경로가 무효화되는 것을 방지한다.
     """
     all_entries = []
     for root, dirs, files in os.walk(folder):
@@ -136,6 +152,7 @@ def convert_folder(folder: str) -> list[ConvertResult]:
         for name in dirs:
             all_entries.append(os.path.join(root, name))
 
+    # 깊은 경로(구분자 수가 많은 것)를 먼저 처리
     all_entries.sort(key=lambda p: p.count(os.sep), reverse=True)
 
     results = []

@@ -53,8 +53,6 @@ def setup_logging():
         ]
     )
 
-# converter/watcher의 로그도 파일에 남도록 임포트 전에 설정한다
-setup_logging()
 
 from converter import convert_folder, ConvertResult, nfd_to_visual
 from watcher import FolderWatcher
@@ -88,16 +86,32 @@ class App(tk.Tk):
         except Exception:
             return False
 
+    def _get_theme_colors(self) -> dict:
+        """다크/라이트 모드에 따른 로그 색상을 반환한다."""
+        if self._dark:
+            return {"bg": "#1e1e1e", "fg": "#dddddd",
+                    "converted": "#66ff66", "error": "#ff6666"}
+        return {"bg": "#ffffff", "fg": "#333333",
+                "converted": "#007700", "error": "#cc0000"}
+
+    # ─── UI 구성 ──────────────────────────────────────────────
+
     def _build_ui(self):
-        # 폴더 선택 행
-        folder_frame = tk.Frame(self)
-        folder_frame.pack(fill="x", pady=(0, 10))
+        self._build_folder_row()
+        self._build_button_row()
+        ttk.Separator(self, orient="horizontal").pack(fill="x", pady=(0, 8))
+        self._build_status_label()
+        self._build_log_area()
+
+    def _build_folder_row(self):
+        """감시 폴더 선택 행을 구성한다."""
+        frame = tk.Frame(self)
+        frame.pack(fill="x", pady=(0, 10))
+
+        tk.Label(frame, text="감시 폴더:").pack(side="left")
 
         # 고정 너비 위젯을 먼저 오른쪽에 배치하고, Entry가 남은 공간을 채운다
-        tk.Label(folder_frame, text="감시 폴더:").pack(side="left")
-
-        # 오른쪽 고정 영역을 서브프레임으로 묶어 창이 좁아져도 항상 표시되도록 한다
-        right_frame = tk.Frame(folder_frame)
+        right_frame = tk.Frame(frame)
         right_frame.pack(side="right")
 
         self.remember_var = tk.BooleanVar(value=False)
@@ -107,48 +121,45 @@ class App(tk.Tk):
                   command=self._choose_folder).pack(side="right", padx=(4, 0))
 
         self.folder_var = tk.StringVar()
-        tk.Entry(folder_frame, textvariable=self.folder_var,
+        tk.Entry(frame, textvariable=self.folder_var,
                  state="readonly").pack(side="left", padx=(6, 4), fill="x", expand=True)
 
-        # 버튼 행
-        btn_frame = tk.Frame(self)
-        btn_frame.pack(fill="x", pady=(0, 10))
+    def _build_button_row(self):
+        """감시 제어 버튼 행을 구성한다."""
+        frame = tk.Frame(self)
+        frame.pack(fill="x", pady=(0, 10))
 
-        self.btn_start = tk.Button(btn_frame, text="▶ 감시 시작", width=12,
+        self.btn_start = tk.Button(frame, text="▶ 폴더 감시 시작",
                                    command=self._start_watch)
         self.btn_start.pack(side="left", padx=(0, 6))
 
-        self.btn_stop = tk.Button(btn_frame, text="■ 중지", width=8,
+        self.btn_stop = tk.Button(frame, text="■ 중지", width=8,
                                   state="disabled", command=self._stop_watch)
         self.btn_stop.pack(side="left", padx=(0, 6))
 
-        self.btn_once = tk.Button(btn_frame, text="한 번 변환", width=10,
+        self.btn_once = tk.Button(frame, text="기존 파일들 한 번에 변환",
                                   command=self._convert_once)
-        self.btn_once.pack(side="left")
+        self.btn_once.pack(side="left", padx=(0, 6))
 
-        ttk.Separator(self, orient="horizontal").pack(fill="x", pady=(0, 8))
-
+    def _build_status_label(self):
         self.status_var = tk.StringVar(value="폴더를 선택하세요.")
         tk.Label(self, textvariable=self.status_var,
                  anchor="w", fg="gray").pack(fill="x", pady=(0, 4))
 
-        if self._dark:
-            log_bg, log_fg = "#1e1e1e", "#dddddd"
-            c_converted, c_error = "#66ff66", "#ff6666"
-        else:
-            log_bg, log_fg = "#ffffff", "#333333"
-            c_converted, c_error = "#007700", "#cc0000"
+    def _build_log_area(self):
+        """스크롤 가능한 로그 텍스트 영역과 색상 태그를 구성한다."""
+        colors = self._get_theme_colors()
 
-        self.log = scrolledtext.ScrolledText(self, width=60, height=18,
-                                             state="disabled", wrap="none",
-                                             font=("Menlo", 11),
-                                             bg=log_bg, fg=log_fg,
-                                             insertbackground=log_fg)
+        self.log = scrolledtext.ScrolledText(
+            self, width=60, height=18, state="disabled", wrap="none",
+            font=("Menlo", 11),
+            bg=colors["bg"], fg=colors["fg"], insertbackground=colors["fg"],
+        )
         self.log.pack(fill="both", expand=True)
 
-        self.log.tag_config("converted", foreground=c_converted)
-        self.log.tag_config("error",     foreground=c_error)
-        self.log.tag_config("info",      foreground=log_fg)
+        self.log.tag_config("converted", foreground=colors["converted"])
+        self.log.tag_config("error",     foreground=colors["error"])
+        self.log.tag_config("info",      foreground=colors["fg"])
 
     def _apply_window_constraints(self):
         """
@@ -169,6 +180,8 @@ class App(tk.Tk):
 
         if self.winfo_width() < min_width or self.winfo_height() < min_height:
             self.geometry(f"{min_width}x{min_height}")
+
+    # ─── 설정 저장/불러오기 ───────────────────────────────────
 
     def _load_config(self):
         """저장된 폴더 경로를 불러온다. 폴더가 실제로 존재할 때만 적용한다."""
@@ -196,6 +209,8 @@ class App(tk.Tk):
 
     def _on_remember_toggle(self):
         self._save_config()
+
+    # ─── 폴더 선택 및 감시 제어 ──────────────────────────────
 
     def _choose_folder(self):
         folder = filedialog.askdirectory(title="감시할 폴더를 선택하세요")
@@ -229,15 +244,18 @@ class App(tk.Tk):
         self.status_var.set("감시가 중지되었습니다.")
         self._log("감시를 중지했습니다.", "info")
 
+    # ─── 일괄 변환 ────────────────────────────────────────────
+
     def _convert_once(self):
-        """
-        폴더 전체를 한 번 스캔해서 변환한다.
+        """폴더 전체를 한 번 스캔해서 변환한다.
+
         감시 중이면 레이스 컨디션 방지를 위해 변환 동안 감시를 일시 중단한다.
         """
         folder = self.folder_var.get()
         if not folder:
             self.status_var.set("먼저 폴더를 선택하세요.")
             return
+
         self.status_var.set("변환 중...")
         self.btn_once.config(state="disabled")
 
@@ -245,36 +263,46 @@ class App(tk.Tk):
         if was_watching:
             self.watcher.stop()
 
-        def run():
-            results = convert_folder(folder)
-            converted = [r for r in results if r.status == "converted"]
-            errors    = [r for r in results if r.status == "error"]
+        threading.Thread(
+            target=self._run_batch_convert,
+            args=(folder, was_watching),
+            daemon=True,
+        ).start()
 
-            def on_done():
-                self._show_batch_results(results, converted, errors)
-                if was_watching:
-                    try:
-                        self.watcher.start(folder)
-                        self.btn_start.config(state="disabled")
-                        self.btn_stop.config(state="normal")
-                        self.status_var.set(f"감시 중: {folder}")
-                        self._log("감시 재개", "info")
-                    except Exception as e:
-                        self._log(f"감시 재개 실패: {e}", "error")
+    def _run_batch_convert(self, folder: str, resume_watch: bool):
+        """백그라운드 스레드에서 일괄 변환을 실행하고 결과를 메인 스레드에 전달한다."""
+        results = convert_folder(folder)
+        self.after(0, self._on_batch_done, results, folder, resume_watch)
 
-            self.after(0, on_done)
+    def _on_batch_done(self, results: list, folder: str, resume_watch: bool):
+        """일괄 변환 완료 후 결과를 표시하고 필요하면 감시를 재개한다."""
+        converted = [r for r in results if r.status == "converted"]
+        errors    = [r for r in results if r.status == "error"]
 
-        threading.Thread(target=run, daemon=True).start()
-
-    def _show_batch_results(self, results, converted, errors):
         for r in results:
             self._log_result(r)
+
         summary = (f"완료 — 변환: {len(converted)}개 / "
                    f"오류: {len(errors)}개 / "
                    f"건너뜀: {len(results)-len(converted)-len(errors)}개")
         self.status_var.set(summary)
         self._log(summary, "info")
         self.btn_once.config(state="normal")
+
+        if resume_watch:
+            self._resume_watch(folder)
+
+    def _resume_watch(self, folder: str):
+        try:
+            self.watcher.start(folder)
+            self.btn_start.config(state="disabled")
+            self.btn_stop.config(state="normal")
+            self.status_var.set(f"감시 중: {folder}")
+            self._log("감시 재개", "info")
+        except Exception as e:
+            self._log(f"감시 재개 실패: {e}", "error")
+
+    # ─── 로그 출력 ────────────────────────────────────────────
 
     def _poll_queue(self):
         """100ms마다 큐를 비워 감시 스레드의 변환 결과를 로그에 표시한다."""
@@ -343,8 +371,7 @@ class App(tk.Tk):
         self.watcher.stop()
         try:
             if hasattr(self, "_status_item"):
-                NSStatusBar.systemStatusBar().removeStatusItem_(
-                    self._status_item)
+                NSStatusBar.systemStatusBar().removeStatusItem_(self._status_item)
         except Exception:
             pass
         self.after(0, self.destroy)
