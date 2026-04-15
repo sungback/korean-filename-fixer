@@ -51,6 +51,11 @@ if _APPKIT:
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".korean_filename_fixer.json")
 
 
+def should_run_startup_scan(folder: str, scan_on_startup: bool) -> bool:
+    """유효한 저장 폴더가 있고 설정이 켜져 있으면 시작 시 자동 스캔을 실행한다."""
+    return bool(scan_on_startup and folder and os.path.isdir(folder))
+
+
 def setup_logging():
     """로그를 홈 디렉토리 파일과 콘솔에 동시에 출력한다."""
     log_path = os.path.join(os.path.expanduser("~"), "KoreanFilenameFixer.log")
@@ -88,6 +93,7 @@ class App(tk.Tk):
         self._dark = self._is_dark_mode()
         self._poll_after_id = None
         self._shutting_down = False
+        self._startup_scan_in_progress = False
 
         self._build_ui()
         self._apply_window_constraints()
@@ -121,6 +127,7 @@ class App(tk.Tk):
     def _build_ui(self):
         self._build_folder_row()
         self._build_exclude_row()
+        self._build_option_row()
         self._build_button_row()
         ttk.Separator(self, orient="horizontal").pack(fill="x", pady=(0, 8))
         self._build_status_label()
@@ -162,6 +169,19 @@ class App(tk.Tk):
         entry.bind("<FocusOut>", self._on_exclude_patterns_changed)
 
         tk.Label(frame, text="쉼표로 구분", fg="gray").pack(side="right")
+
+    def _build_option_row(self):
+        """시작 동작 옵션 행을 구성한다."""
+        frame = tk.Frame(self)
+        frame.pack(fill="x", pady=(0, 10))
+
+        self.scan_on_startup_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            frame,
+            text="시작 시 누락분 자동 스캔",
+            variable=self.scan_on_startup_var,
+            command=self._on_scan_on_startup_toggle,
+        ).pack(side="left")
 
     def _build_button_row(self):
         """감시 제어 버튼 행을 구성한다."""
@@ -240,12 +260,16 @@ class App(tk.Tk):
                 data.get("exclude_patterns", DEFAULT_EXCLUDE_PATTERNS)
             )
             self.exclude_var.set(self._format_exclude_patterns(exclude_patterns))
+            self.scan_on_startup_var.set(bool(data.get("scan_on_startup", True)))
             folder = data.get("folder", "")
             if folder and os.path.isdir(folder):
                 self.folder_var.set(folder)
                 self.remember_var.set(True)
                 self.status_var.set("저장된 설정을 불러왔습니다.")
-                self._start_watch()
+                if should_run_startup_scan(folder, self.scan_on_startup_var.get()):
+                    self._start_startup_scan(folder)
+                else:
+                    self._start_watch()
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
@@ -256,6 +280,7 @@ class App(tk.Tk):
                 json.dump({
                     "folder": self.folder_var.get(),
                     "exclude_patterns": self._get_exclude_patterns(),
+                    "scan_on_startup": self.scan_on_startup_var.get(),
                 }, f, ensure_ascii=False)
         else:
             try:
@@ -265,6 +290,10 @@ class App(tk.Tk):
 
     def _on_remember_toggle(self):
         self._save_config()
+
+    def _on_scan_on_startup_toggle(self):
+        if self.remember_var.get() and self.folder_var.get():
+            self._save_config()
 
     def _get_exclude_patterns(self) -> list[str]:
         return clean_exclude_patterns(self.exclude_var.get().split(","))
@@ -294,6 +323,15 @@ class App(tk.Tk):
                 self.status_var.set(f"제외 패턴 적용 실패: {e}")
                 self._log(f"제외 패턴 적용 실패: {e}", "error")
 
+    def _set_startup_scan_running(self, running: bool):
+        """시작 시 자동 스캔 중에는 수동 작업 버튼을 잠시 잠근다."""
+        self._startup_scan_in_progress = running
+        self.btn_start.config(
+            state="disabled" if running or self.watcher.is_running else "normal"
+        )
+        self.btn_preview.config(state="disabled" if running else "normal")
+        self.btn_once.config(state="disabled" if running else "normal")
+
     # ─── 폴더 선택 및 감시 제어 ──────────────────────────────
 
     def _choose_folder(self):
@@ -306,6 +344,9 @@ class App(tk.Tk):
                 self._save_config()
 
     def _start_watch(self):
+        if self._startup_scan_in_progress:
+            self.status_var.set("시작 시 누락분 스캔 중입니다.")
+            return
         folder = self.folder_var.get()
         if not folder:
             self.status_var.set("먼저 폴더를 선택하세요.")
@@ -335,8 +376,32 @@ class App(tk.Tk):
 
     # ─── 일괄 변환 ────────────────────────────────────────────
 
+    def _start_startup_scan(self, folder: str):
+        """저장된 폴더가 있으면 앱 시작 직후 누락분을 한 번 정리한다."""
+        self._set_startup_scan_running(True)
+        self.status_var.set("시작 시 누락분 확인 중...")
+        self._log(f"시작 시 누락분 스캔 시작... (제외: {self._exclude_patterns_text()})", "info")
+
+        exclude_patterns = self._get_exclude_patterns()
+        threading.Thread(
+            target=self._run_startup_scan,
+            args=(folder, exclude_patterns),
+            daemon=True,
+        ).start()
+
+    def _run_startup_scan(self, folder: str, exclude_patterns: list[str]):
+        """백그라운드 스레드에서 시작 시 자동 스캔을 실행한다."""
+        try:
+            results = convert_folder(folder, exclude_patterns=exclude_patterns)
+            self.after(0, self._on_startup_scan_done, results, folder)
+        except Exception as e:
+            self.after(0, self._on_startup_scan_failed, folder, str(e))
+
     def _preview_once(self):
         """폴더 전체를 스캔해 변환 예정 결과만 표시한다."""
+        if self._startup_scan_in_progress:
+            self.status_var.set("시작 시 누락분 스캔 중에는 실행할 수 없습니다.")
+            return
         folder = self.folder_var.get()
         if not folder:
             self.status_var.set("먼저 폴더를 선택하세요.")
@@ -366,6 +431,9 @@ class App(tk.Tk):
 
         감시 중이면 레이스 컨디션 방지를 위해 변환 동안 감시를 일시 중단한다.
         """
+        if self._startup_scan_in_progress:
+            self.status_var.set("시작 시 누락분 스캔 중에는 실행할 수 없습니다.")
+            return
         folder = self.folder_var.get()
         if not folder:
             self.status_var.set("먼저 폴더를 선택하세요.")
@@ -429,6 +497,32 @@ class App(tk.Tk):
 
         if resume_watch:
             self._resume_watch(folder)
+
+    def _on_startup_scan_done(self, results: list, folder: str):
+        """시작 시 자동 스캔 완료 후 결과를 기록하고 감시를 시작한다."""
+        converted = [r for r in results if r.status == "converted"]
+        conflicts = [r for r in results if r.status == "conflict"]
+        errors    = [r for r in results if r.status == "error"]
+        skipped   = [r for r in results if r.status == "skipped"]
+
+        for r in results:
+            self._log_result(r)
+
+        summary = (f"시작 시 누락분 처리 완료 — 변환: {len(converted)}개 / "
+                   f"충돌: {len(conflicts)}개 / "
+                   f"오류: {len(errors)}개 / "
+                   f"건너뜀: {len(skipped)}개")
+        self.status_var.set(summary)
+        self._log(summary, "info")
+        self._set_startup_scan_running(False)
+        self._start_watch()
+
+    def _on_startup_scan_failed(self, folder: str, error: str):
+        """시작 시 자동 스캔 실패 시에도 앱은 계속 실행하고 감시는 시작한다."""
+        self.status_var.set(f"시작 시 누락분 스캔 실패: {error}")
+        self._log(f"시작 시 누락분 스캔 실패: {error}", "error")
+        self._set_startup_scan_running(False)
+        self._start_watch()
 
     def _resume_watch(self, folder: str):
         try:
