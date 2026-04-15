@@ -41,6 +41,9 @@ jobs:
       - name: 의존성 설치
         run: pip install -r requirements.txt
 
+      - name: 테스트 실행
+        run: python -m unittest discover -s tests -v
+
       - name: PyInstaller 빌드 (macOS)
         if: matrix.os == 'macos-latest'
         run: |

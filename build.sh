@@ -10,6 +10,9 @@ BUILD_DIR="build"
 echo "=== 의존성 설치 ==="
 pip install -r requirements.txt
 
+echo "=== 테스트 실행 ==="
+python -m unittest discover -s tests -v
+
 echo "=== PyInstaller 빌드 ==="
 if [[ "$(uname)" == "Darwin" ]]; then
   # macOS: onedir — 압축 해제 없이 즉시 실행

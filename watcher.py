@@ -52,9 +52,10 @@ class NFDHandler(FileSystemEventHandler):
             return path
         nfc_name = unicodedata.normalize('NFC', name)
         try:
-            for entry in os.scandir(dirpath):
-                if unicodedata.normalize('NFC', entry.name) == nfc_name:
-                    return os.path.join(dirpath, entry.name)
+            with os.scandir(dirpath) as entries:
+                for entry in entries:
+                    if unicodedata.normalize('NFC', entry.name) == nfc_name:
+                        return os.path.join(dirpath, entry.name)
         except OSError:
             pass
         return path

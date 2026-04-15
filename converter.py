@@ -47,6 +47,8 @@ def clean_exclude_patterns(patterns) -> list[str]:
     cleaned = []
     seen = set()
     for pattern in patterns or []:
+        if pattern is None:
+            continue
         value = str(pattern).strip()
         if not value or value in seen:
             continue
