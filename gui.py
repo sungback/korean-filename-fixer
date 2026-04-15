@@ -28,6 +28,8 @@ if _APPKIT:
         """NSMenuItem 액션을 Python 콜백으로 연결하는 ObjC 델리게이트."""
         _show_cb = None
         _quit_cb = None
+        _start_cb = None
+        _stop_cb = None
 
         def showWindow_(self, sender):
             if self._show_cb:
@@ -36,6 +38,14 @@ if _APPKIT:
         def quitApp_(self, sender):
             if self._quit_cb:
                 self._quit_cb()
+
+        def startWatch_(self, sender):
+            if self._start_cb:
+                self._start_cb()
+
+        def stopWatch_(self, sender):
+            if self._stop_cb:
+                self._stop_cb()
 
 
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".korean_filename_fixer.json")
@@ -66,6 +76,7 @@ class App(tk.Tk):
         self.configure(padx=16, pady=16)
 
         self._queue: queue.Queue = queue.Queue()
+        self._cmd_queue: queue.Queue = queue.Queue()
         self.watcher = FolderWatcher(callback=self._queue.put)
         self._dark = self._is_dark_mode()
 
@@ -241,6 +252,7 @@ class App(tk.Tk):
         self.status_var.set(f"감시 중: {folder}")
         self._log("감시를 시작했습니다.", "info")
         self._update_tray_title(watching=True)
+        self._update_tray_menu_state(watching=True)
 
     def _stop_watch(self):
         self.watcher.stop()
@@ -249,6 +261,7 @@ class App(tk.Tk):
         self.status_var.set("감시가 중지되었습니다.")
         self._log("감시를 중지했습니다.", "info")
         self._update_tray_title(watching=False)
+        self._update_tray_menu_state(watching=False)
 
     # ─── 일괄 변환 ────────────────────────────────────────────
 
@@ -306,6 +319,7 @@ class App(tk.Tk):
             self.status_var.set(f"감시 중: {folder}")
             self._log("감시 재개", "info")
             self._update_tray_title(watching=True)
+            self._update_tray_menu_state(watching=True)
         except Exception as e:
             self._log(f"감시 재개 실패: {e}", "error")
 
@@ -316,6 +330,15 @@ class App(tk.Tk):
         try:
             while True:
                 self._log_result(self._queue.get_nowait())
+        except queue.Empty:
+            pass
+        try:
+            while True:
+                cmd = self._cmd_queue.get_nowait()
+                if cmd == "start":
+                    self._start_watch()
+                elif cmd == "stop":
+                    self._stop_watch()
         except queue.Empty:
             pass
         self.after(100, self._poll_queue)
@@ -350,17 +373,32 @@ class App(tk.Tk):
             self._tray_delegate = _TrayDelegate.alloc().init()
             self._tray_delegate._show_cb = self._show_window
             self._tray_delegate._quit_cb = self._quit_app
+            # ObjC 콜백은 별도 스레드에서 실행되므로 큐에만 넣고 메인 스레드가 처리한다
+            self._tray_delegate._start_cb = lambda: self._cmd_queue.put("start")
+            self._tray_delegate._stop_cb = lambda: self._cmd_queue.put("stop")
 
             show_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 "창 열기", "showWindow:", "")
             show_item.setTarget_(self._tray_delegate)
+
+            self._tray_start_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "감시 시작", "startWatch:", "")
+            self._tray_start_item.setTarget_(self._tray_delegate)
+
+            self._tray_stop_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "감시 중지", "stopWatch:", "")
+            self._tray_stop_item.setTarget_(self._tray_delegate)
 
             quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 "종료", "quitApp:", "")
             quit_item.setTarget_(self._tray_delegate)
 
             menu = NSMenu.alloc().init()
+            menu.setAutoenablesItems_(False)
             menu.addItem_(show_item)
+            menu.addItem_(NSMenuItem.separatorItem())
+            menu.addItem_(self._tray_start_item)
+            menu.addItem_(self._tray_stop_item)
             menu.addItem_(NSMenuItem.separatorItem())
             menu.addItem_(quit_item)
 
@@ -370,6 +408,7 @@ class App(tk.Tk):
             title = "K●" if self.watcher.is_running else "K"
             self._status_item.button().setTitle_(title)
             self._status_item.setMenu_(menu)
+            self._update_tray_menu_state(self.watcher.is_running)
         except Exception:
             logging.exception("트레이 아이콘 설정 실패")
 
@@ -379,6 +418,13 @@ class App(tk.Tk):
             return
         title = "K●" if watching else "K"
         self._status_item.button().setTitle_(title)
+
+    def _update_tray_menu_state(self, watching: bool):
+        """감시 상태에 따라 트레이 메뉴 항목 활성/비활성을 갱신한다."""
+        if not _APPKIT or not hasattr(self, "_tray_start_item"):
+            return
+        self._tray_start_item.setEnabled_(not watching)
+        self._tray_stop_item.setEnabled_(watching)
 
     def _show_window(self):
         """메뉴바 또는 독 아이콘 클릭 시 창을 복원한다."""
