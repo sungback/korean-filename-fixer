@@ -54,8 +54,8 @@ jobs:
       - name: PyInstaller 빌드 (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          pyinstaller --windowed --onefile --name "KoreanFilenameFixer" --clean main.py
-          Compress-Archive -Path dist\KoreanFilenameFixer.exe -DestinationPath ${{ matrix.zip_name }}
+          pyinstaller --windowed --onedir --name "KoreanFilenameFixer" --clean main.py
+          Compress-Archive -Path "dist\KoreanFilenameFixer" -DestinationPath ${{ matrix.zip_name }}
         shell: pwsh
 
       - name: 빌드 결과 업로드
