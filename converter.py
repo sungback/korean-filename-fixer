@@ -27,7 +27,10 @@ class ConvertResult:
 
 
 _IGNORED_TEMP_NAME_RE = re.compile(r"\.sb-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+$")
-DEFAULT_EXCLUDE_PATTERNS = (".git", "node_modules")
+DEFAULT_EXCLUDE_PATTERNS = (
+    ".git", "node_modules", "venv", ".venv", "__pycache__", 
+    "build", "dist", ".idea", ".vscode"
+)
 
 
 def is_nfd(name: str) -> bool:
