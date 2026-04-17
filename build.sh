@@ -1,5 +1,5 @@
 #!/bin/bash
-# build.sh — PyInstaller 빌드 (macOS: onedir, Windows: onefile)
+# build.sh — PyInstaller 빌드 (macOS: onedir, Windows: onedir)
 
 set -e
 
@@ -52,8 +52,8 @@ if [[ "$(uname)" == "Darwin" ]]; then
       "$APP_NAME.app" "$OLDPWD/$DIST_DIR/$APP_NAME.app.zip"
   )
 else
-  # Windows: onefile — 단일 .exe 배포
-  BUNDLE_OPT="--onefile"
+  # Windows: onedir — 디렉터리 배포 (바이러스 오진 방지)
+  BUNDLE_OPT="--onedir"
   pyinstaller \
     -y \
     --windowed \
