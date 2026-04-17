@@ -735,5 +735,8 @@ class App(tk.Tk):
         self.destroy()
 
     def on_close(self):
-        """창 닫기(X) 시 메뉴바로 숨긴다. 종료는 메뉴바 '종료' 사용."""
-        self.withdraw()
+        """창 닫기(X) 시 메뉴바로 숨긴다. Windows 등 트레이가 없으면 바로 종료한다."""
+        if _APPKIT:
+            self.withdraw()
+        else:
+            self._quit_app()
