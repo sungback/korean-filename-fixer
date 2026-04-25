@@ -2,6 +2,10 @@
 
 macOS에서 생성된 한글 파일명의 유니코드 정규화 형식을 **NFD → NFC**로 자동 변환하는 GUI 앱입니다.
 
+## 스크린샷
+
+<img src="docs/images/screenshot.png" alt="Korean Filename Fixer 스크린샷" width="700">
+
 ## 배경
 
 macOS는 한글 파일명을 **NFD(Normalization Form D)** 방식으로 저장합니다.
