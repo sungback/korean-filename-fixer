@@ -99,6 +99,7 @@ class App(tk.Tk):
         self.watcher = FolderWatcher(callback=self._queue.put)
         self._dark = self._is_dark_mode()
         self._poll_after_id = None
+        self._health_check_after_id = None
         self._shutting_down = False
         self._startup_scan_in_progress = False
         self._autostart_path = get_autostart_executable_path()
@@ -107,6 +108,7 @@ class App(tk.Tk):
         self._apply_window_constraints()
         self._load_config()
         self._poll_queue()
+        self._health_check()
         self._setup_tray()
         # 독 아이콘 클릭(창이 숨겨진 상태) 시 창을 복원한다
         self.createcommand("::tk::mac::ReopenApplication", self._show_window)
@@ -659,6 +661,32 @@ class App(tk.Tk):
             pass
         self._poll_after_id = self.after(100, self._poll_queue)
 
+    def _health_check(self):
+        """5초마다 감시 스레드가 살아있는지 확인하고, 죽었으면 자동 재시작한다."""
+        if self._shutting_down:
+            self._health_check_after_id = None
+            return
+        should_watch = str(self.btn_stop["state"]) == "normal"
+        if should_watch and not self._startup_scan_in_progress and not self.watcher.is_running:
+            folder = self.folder_var.get()
+            self._log("감시 프로세스가 중단되어 자동으로 재시작합니다.", "error")
+            if _APPKIT and hasattr(self, "_status_item"):
+                self._status_item.button().setTitle_("K!")
+            try:
+                self.watcher.start(folder, self._get_exclude_patterns())
+                self.status_var.set(f"감시 중: {folder}")
+                self._log("감시 재시작 완료.", "info")
+                self._update_tray_title(watching=True)
+                self._update_tray_menu_state(watching=True)
+            except Exception as e:
+                self._log(f"감시 재시작 실패: {e}", "error")
+                self.btn_start.config(state="normal")
+                self.btn_stop.config(state="disabled")
+                self.status_var.set("감시 재시작 실패 — 수동으로 다시 시작하세요.")
+                self._update_tray_title(watching=False)
+                self._update_tray_menu_state(watching=False)
+        self._health_check_after_id = self.after(5000, self._health_check)
+
     def _log_result(self, result: ConvertResult):
         if result.status == "converted":
             visual = nfd_to_visual(result.original)
@@ -763,12 +791,14 @@ class App(tk.Tk):
             return
         self._shutting_down = True
         self.watcher.stop()
-        if self._poll_after_id is not None:
-            try:
-                self.after_cancel(self._poll_after_id)
-            except Exception:
-                pass
-            self._poll_after_id = None
+        for attr in ("_poll_after_id", "_health_check_after_id"):
+            after_id = getattr(self, attr, None)
+            if after_id is not None:
+                try:
+                    self.after_cancel(after_id)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
         try:
             if hasattr(self, "_status_item"):
                 NSStatusBar.systemStatusBar().removeStatusItem_(self._status_item)
