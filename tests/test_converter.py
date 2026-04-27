@@ -111,6 +111,68 @@ class ConverterTests(unittest.TestCase):
             self.assertIn("이미 존재", result.error)
             self.assertTrue(os.path.exists(original_path))
 
+    def test_convert_file_restores_original_when_final_rename_permission_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_path = os.path.join(tmp, nfd_name("실패.txt"))
+            expected_path = os.path.join(tmp, "실패.txt")
+            with open(original_path, "w", encoding="utf-8") as f:
+                f.write("content")
+
+            real_rename = os.rename
+
+            def fail_final_rename(src, dst):
+                if os.path.basename(src).startswith("__nfc_tmp_") and dst == expected_path:
+                    raise PermissionError("simulated final rename failure")
+                return real_rename(src, dst)
+
+            with patch("converter.os.rename", side_effect=fail_final_rename):
+                result = convert_file(original_path, retry=1, retry_interval=0)
+
+            self.assertEqual(result.status, "error")
+            self.assertTrue(os.path.exists(original_path))
+            self.assertFalse(os.path.exists(expected_path))
+            self.assertFalse(any(name.startswith("__nfc_tmp_") for name in os.listdir(tmp)))
+
+    def test_convert_directory_restores_original_when_final_rename_permission_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_path = os.path.join(tmp, nfd_name("실패폴더"))
+            expected_path = os.path.join(tmp, "실패폴더")
+            os.makedirs(original_path)
+
+            real_rename = os.rename
+
+            def fail_final_rename(src, dst):
+                if os.path.basename(src).startswith("__nfc_tmp_") and dst == expected_path:
+                    raise PermissionError("simulated final rename failure")
+                return real_rename(src, dst)
+
+            with patch("converter.os.rename", side_effect=fail_final_rename):
+                result = convert_file(original_path, retry=1, retry_interval=0)
+
+            self.assertEqual(result.status, "error")
+            self.assertTrue(os.path.isdir(original_path))
+            self.assertFalse(os.path.exists(expected_path))
+            self.assertFalse(any(name.startswith("__nfc_tmp_") for name in os.listdir(tmp)))
+
+    def test_convert_file_preserves_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target_path = os.path.join(tmp, "target.txt")
+            with open(target_path, "w", encoding="utf-8") as f:
+                f.write("target")
+
+            original_path = os.path.join(tmp, nfd_name("링크.txt"))
+            try:
+                os.symlink(target_path, original_path)
+            except (OSError, NotImplementedError) as e:
+                self.skipTest(f"symlink unavailable: {e}")
+
+            result = convert_file(original_path)
+            expected_path = os.path.join(tmp, "링크.txt")
+
+            self.assertEqual(result.status, "converted")
+            self.assertTrue(os.path.islink(expected_path))
+            self.assertTrue(os.path.samefile(os.readlink(expected_path), target_path))
+
     def test_preview_folder_reports_preview_and_skipped_results(self):
         with tempfile.TemporaryDirectory() as tmp:
             preview_path = os.path.join(tmp, nfd_name("예정.txt"))

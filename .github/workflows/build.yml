@@ -47,14 +47,13 @@ jobs:
       - name: PyInstaller 빌드 (macOS)
         if: matrix.os == 'macos-latest'
         run: |
-          pyinstaller --windowed --onedir --name "KoreanFilenameFixer" --clean main.py
-          cd dist
-          zip -r ../${{ matrix.zip_name }} KoreanFilenameFixer.app
+          bash build.sh
+          cp dist/KoreanFilenameFixer.app.zip ${{ matrix.zip_name }}
 
       - name: PyInstaller 빌드 (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          pyinstaller --windowed --onedir --name "KoreanFilenameFixer" --clean main.py
+          bash build.sh
           Compress-Archive -Path "dist\KoreanFilenameFixer" -DestinationPath ${{ matrix.zip_name }}
         shell: pwsh
 

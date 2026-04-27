@@ -32,8 +32,7 @@ class NFDHandler(FileSystemEventHandler):
         self._dedup_lock = threading.Lock()
 
     def on_created(self, event):
-        if not event.is_directory:
-            self._handle(event.src_path, is_directory=False)
+        self._handle(event.src_path, is_directory=event.is_directory)
 
     def on_modified(self, event):
         if not event.is_directory:

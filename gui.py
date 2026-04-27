@@ -447,9 +447,9 @@ class App(tk.Tk):
         """백그라운드 스레드에서 시작 시 자동 스캔을 실행한다."""
         try:
             results = convert_folder(folder, exclude_patterns=exclude_patterns)
-            self.after(0, self._on_startup_scan_done, results, folder)
+            self._cmd_queue.put(("startup_scan_done", results, folder))
         except Exception as e:
-            self.after(0, self._on_startup_scan_failed, folder, str(e))
+            self._cmd_queue.put(("startup_scan_failed", folder, str(e)))
 
     def _preview_once(self):
         """폴더 전체를 스캔해 변환 예정 결과만 표시한다."""
@@ -477,8 +477,11 @@ class App(tk.Tk):
 
     def _run_preview(self, folder: str, resume_watch: bool, exclude_patterns: list[str]):
         """백그라운드 스레드에서 미리보기를 계산하고 결과를 메인 스레드에 전달한다."""
-        results = preview_folder(folder, exclude_patterns=exclude_patterns)
-        self.after(0, self._on_preview_done, results, folder, resume_watch)
+        try:
+            results = preview_folder(folder, exclude_patterns=exclude_patterns)
+            self._cmd_queue.put(("preview_done", results, folder, resume_watch))
+        except Exception as e:
+            self._cmd_queue.put(("preview_failed", folder, resume_watch, str(e)))
 
     def _convert_once(self):
         """폴더 전체를 한 번 스캔해서 변환한다.
@@ -509,8 +512,11 @@ class App(tk.Tk):
 
     def _run_batch_convert(self, folder: str, resume_watch: bool, exclude_patterns: list[str]):
         """백그라운드 스레드에서 일괄 변환을 실행하고 결과를 메인 스레드에 전달한다."""
-        results = convert_folder(folder, exclude_patterns=exclude_patterns)
-        self.after(0, self._on_batch_done, results, folder, resume_watch)
+        try:
+            results = convert_folder(folder, exclude_patterns=exclude_patterns)
+            self._cmd_queue.put(("batch_done", results, folder, resume_watch))
+        except Exception as e:
+            self._cmd_queue.put(("batch_failed", folder, resume_watch, str(e)))
 
     def _on_batch_done(self, results: list, folder: str, resume_watch: bool):
         """일괄 변환 완료 후 결과를 표시하고 필요하면 감시를 재개한다."""
@@ -533,6 +539,15 @@ class App(tk.Tk):
         if resume_watch:
             self._resume_watch(folder)
 
+    def _on_batch_failed(self, folder: str, resume_watch: bool, error: str):
+        """일괄 변환 실패 후 버튼 상태를 복구하고 필요하면 감시를 재개한다."""
+        self.status_var.set(f"변환 실패: {error}")
+        self._log(f"변환 실패: {error}", "error")
+        self.btn_once.config(state="normal")
+
+        if resume_watch:
+            self._resume_watch(folder)
+
     def _on_preview_done(self, results: list, folder: str, resume_watch: bool):
         """미리보기 완료 후 결과를 표시하고 필요하면 감시를 재개한다."""
         previews = [r for r in results if r.status == "preview"]
@@ -547,6 +562,15 @@ class App(tk.Tk):
                    f"건너뜀: {len(skipped)}개")
         self.status_var.set(summary)
         self._log(summary, "info")
+        self.btn_preview.config(state="normal")
+
+        if resume_watch:
+            self._resume_watch(folder)
+
+    def _on_preview_failed(self, folder: str, resume_watch: bool, error: str):
+        """미리보기 실패 후 버튼 상태를 복구하고 필요하면 감시를 재개한다."""
+        self.status_var.set(f"미리보기 실패: {error}")
+        self._log(f"미리보기 실패: {error}", "error")
         self.btn_preview.config(state="normal")
 
         if resume_watch:
@@ -592,6 +616,32 @@ class App(tk.Tk):
 
     # ─── 로그 출력 ────────────────────────────────────────────
 
+    def _dispatch_command(self, cmd):
+        if isinstance(cmd, tuple):
+            action, *args = cmd
+            if action == "startup_scan_done":
+                self._on_startup_scan_done(*args)
+            elif action == "startup_scan_failed":
+                self._on_startup_scan_failed(*args)
+            elif action == "preview_done":
+                self._on_preview_done(*args)
+            elif action == "preview_failed":
+                self._on_preview_failed(*args)
+            elif action == "batch_done":
+                self._on_batch_done(*args)
+            elif action == "batch_failed":
+                self._on_batch_failed(*args)
+            return
+
+        if cmd == "start":
+            self._start_watch()
+        elif cmd == "stop":
+            self._stop_watch()
+        elif cmd == "show":
+            self._show_window()
+        elif cmd == "quit":
+            self._quit_app()
+
     def _poll_queue(self):
         """100ms마다 큐를 비워 감시 스레드의 변환 결과를 로그에 표시한다."""
         if self._shutting_down:
@@ -604,15 +654,7 @@ class App(tk.Tk):
             pass
         try:
             while True:
-                cmd = self._cmd_queue.get_nowait()
-                if cmd == "start":
-                    self._start_watch()
-                elif cmd == "stop":
-                    self._stop_watch()
-                elif cmd == "show":
-                    self._show_window()
-                elif cmd == "quit":
-                    self._quit_app()
+                self._dispatch_command(self._cmd_queue.get_nowait())
         except queue.Empty:
             pass
         self._poll_after_id = self.after(100, self._poll_queue)

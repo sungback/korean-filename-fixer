@@ -12,6 +12,12 @@ def nfd_name(text: str) -> str:
     return unicodedata.normalize("NFD", text)
 
 
+class FakeEvent:
+    def __init__(self, path: str, is_directory: bool):
+        self.src_path = path
+        self.is_directory = is_directory
+
+
 class WatcherTests(unittest.TestCase):
     def test_resolve_actual_path_finds_nfd_name_from_nfc_event_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -54,6 +60,18 @@ class WatcherTests(unittest.TestCase):
 
             self.assertEqual(captured, [])
             self.assertTrue(os.path.exists(original_path))
+
+    def test_on_created_handles_nfd_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_path = os.path.join(tmp, nfd_name("새폴더"))
+            os.makedirs(original_path)
+
+            handler = NFDHandler(lambda result: None)
+
+            with patch.object(handler, "_handle") as handle:
+                handler.on_created(FakeEvent(original_path, is_directory=True))
+
+            handle.assert_called_once_with(original_path, is_directory=True)
 
     def test_handle_passes_conflict_result_to_callback(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -128,6 +128,12 @@ def _rename_dir(src: str, tmp: str, dst: str):
     os.rename(tmp, dst)
 
 
+def _rename_symlink(src: str, tmp: str, dst: str):
+    """심볼릭 링크 자체를 NFD→NFC로 rename한다."""
+    os.rename(src, tmp)
+    os.rename(tmp, dst)
+
+
 def _rename_file(src: str, tmp: str, dst: str):
     """파일을 NFD→NFC로 rename한다.
 
@@ -137,6 +143,28 @@ def _rename_file(src: str, tmp: str, dst: str):
     shutil.copy2(src, tmp)
     os.remove(src)
     os.rename(tmp, dst)
+
+
+def _path_exists(path: str) -> bool:
+    """깨진 symlink까지 존재하는 경로로 취급한다."""
+    return os.path.exists(path) or os.path.islink(path)
+
+
+def _remove_path(path: str):
+    if os.path.islink(path) or not os.path.isdir(path):
+        os.remove(path)
+    else:
+        shutil.rmtree(path)
+
+
+def _rollback_tmp(src: str, tmp: str):
+    """실패한 변환 시 임시 경로를 원상 복구하거나 정리한다."""
+    if not _path_exists(tmp):
+        return
+    if _path_exists(src):
+        _remove_path(tmp)
+    else:
+        os.rename(tmp, src)
 
 
 def _find_conflicting_entry(filepath: str, converted_name: str) -> str:
@@ -196,7 +224,9 @@ def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> 
 
     for attempt in range(retry):
         try:
-            if os.path.isdir(filepath):
+            if os.path.islink(filepath):
+                _rename_symlink(filepath, tmp_path, new_path)
+            elif os.path.isdir(filepath):
                 _rename_dir(filepath, tmp_path, new_path)
             else:
                 _rename_file(filepath, tmp_path, new_path)
@@ -205,16 +235,18 @@ def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> 
             return ConvertResult(new_path, name, nfc_name, "converted")
 
         except PermissionError:
+            try:
+                _rollback_tmp(filepath, tmp_path)
+            except Exception:
+                pass
             logging.warning(f"File locked, retrying ({attempt + 1}/{retry}): {filepath}")
             time.sleep(retry_interval)
 
         except Exception as e:
-            # 임시 파일만 남고 원본이 없으면 원본 이름으로 복구
-            if os.path.exists(tmp_path) and not os.path.exists(filepath):
-                try:
-                    os.rename(tmp_path, filepath)
-                except Exception:
-                    pass
+            try:
+                _rollback_tmp(filepath, tmp_path)
+            except Exception:
+                pass
             logging.error(f"Error converting {filepath}: {e}")
             return ConvertResult(filepath, name, nfc_name, "error", str(e))
 
