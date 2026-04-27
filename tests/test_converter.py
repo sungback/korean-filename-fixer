@@ -19,6 +19,10 @@ def nfd_name(text: str) -> str:
     return unicodedata.normalize("NFD", text)
 
 
+def has_distinct_normalized_entries(folder: str) -> bool:
+    return len(os.listdir(folder)) >= 2
+
+
 class ConverterTests(unittest.TestCase):
     def test_clean_exclude_patterns_removes_empty_values_and_duplicates(self):
         patterns = clean_exclude_patterns([".git", "", " node_modules ", ".git", None])
@@ -94,6 +98,8 @@ class ConverterTests(unittest.TestCase):
             conflict_path = os.path.join(tmp, "한글.txt")
             with open(conflict_path, "w", encoding="utf-8") as f:
                 f.write("existing")
+            if not has_distinct_normalized_entries(tmp):
+                self.skipTest("filesystem treats NFD/NFC names as the same entry")
 
             result = plan_file(original_path)
 
@@ -110,6 +116,8 @@ class ConverterTests(unittest.TestCase):
             conflict_path = os.path.join(tmp, "충돌.txt")
             with open(conflict_path, "w", encoding="utf-8") as f:
                 f.write("existing")
+            if not has_distinct_normalized_entries(tmp):
+                self.skipTest("filesystem treats NFD/NFC names as the same entry")
 
             result = convert_file(original_path)
 
@@ -124,6 +132,7 @@ class ConverterTests(unittest.TestCase):
             expected_path = os.path.join(tmp, "실패.txt")
             with open(original_path, "w", encoding="utf-8") as f:
                 f.write("content")
+            expected_path_is_alias = os.path.exists(expected_path)
 
             real_rename = os.rename
 
@@ -137,7 +146,8 @@ class ConverterTests(unittest.TestCase):
 
             self.assertEqual(result.status, "error")
             self.assertTrue(os.path.exists(original_path))
-            self.assertFalse(os.path.exists(expected_path))
+            if not expected_path_is_alias:
+                self.assertFalse(os.path.exists(expected_path))
             self.assertFalse(any(name.startswith("__nfc_tmp_") for name in os.listdir(tmp)))
 
     def test_convert_directory_restores_original_when_final_rename_permission_denied(self):
@@ -145,6 +155,7 @@ class ConverterTests(unittest.TestCase):
             original_path = os.path.join(tmp, nfd_name("실패폴더"))
             expected_path = os.path.join(tmp, "실패폴더")
             os.makedirs(original_path)
+            expected_path_is_alias = os.path.exists(expected_path)
 
             real_rename = os.rename
 
@@ -158,7 +169,8 @@ class ConverterTests(unittest.TestCase):
 
             self.assertEqual(result.status, "error")
             self.assertTrue(os.path.isdir(original_path))
-            self.assertFalse(os.path.exists(expected_path))
+            if not expected_path_is_alias:
+                self.assertFalse(os.path.exists(expected_path))
             self.assertFalse(any(name.startswith("__nfc_tmp_") for name in os.listdir(tmp)))
 
     def test_convert_file_preserves_symlink(self):

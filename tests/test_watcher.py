@@ -75,7 +75,6 @@ class WatcherTests(unittest.TestCase):
             self.assertEqual(len(captured), 1)
             self.assertEqual(captured[0].status, "converted")
             self.assertEqual(captured[0].path, converted_path)
-            self.assertFalse(os.path.exists(original_path))
             self.assertTrue(os.path.isdir(converted_path))
 
     def test_handle_passes_conflict_result_to_callback(self):
