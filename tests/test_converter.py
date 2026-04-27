@@ -91,25 +91,32 @@ class ConverterTests(unittest.TestCase):
             original_path = os.path.join(tmp, nfd_name("한글.txt"))
             with open(original_path, "w", encoding="utf-8") as f:
                 f.write("content")
+            conflict_path = os.path.join(tmp, "한글.txt")
+            with open(conflict_path, "w", encoding="utf-8") as f:
+                f.write("existing")
 
-            with patch("converter._find_conflicting_entry", return_value="한글.txt"):
-                result = plan_file(original_path)
+            result = plan_file(original_path)
 
             self.assertEqual(result.status, "conflict")
             self.assertIn("이미 존재", result.error)
+            self.assertTrue(os.path.exists(original_path))
+            self.assertTrue(os.path.exists(conflict_path))
 
     def test_convert_file_preserves_conflict_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             original_path = os.path.join(tmp, nfd_name("충돌.txt"))
             with open(original_path, "w", encoding="utf-8") as f:
                 f.write("content")
+            conflict_path = os.path.join(tmp, "충돌.txt")
+            with open(conflict_path, "w", encoding="utf-8") as f:
+                f.write("existing")
 
-            with patch("converter._find_conflicting_entry", return_value="충돌.txt"):
-                result = convert_file(original_path)
+            result = convert_file(original_path)
 
             self.assertEqual(result.status, "conflict")
             self.assertIn("이미 존재", result.error)
             self.assertTrue(os.path.exists(original_path))
+            self.assertTrue(os.path.exists(conflict_path))
 
     def test_convert_file_restores_original_when_final_rename_permission_denied(self):
         with tempfile.TemporaryDirectory() as tmp:

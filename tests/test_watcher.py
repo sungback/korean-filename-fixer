@@ -64,14 +64,19 @@ class WatcherTests(unittest.TestCase):
     def test_on_created_handles_nfd_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             original_path = os.path.join(tmp, nfd_name("새폴더"))
+            converted_path = os.path.join(tmp, "새폴더")
             os.makedirs(original_path)
+            captured = []
 
-            handler = NFDHandler(lambda result: None)
+            handler = NFDHandler(captured.append)
 
-            with patch.object(handler, "_handle") as handle:
-                handler.on_created(FakeEvent(original_path, is_directory=True))
+            handler.on_created(FakeEvent(original_path, is_directory=True))
 
-            handle.assert_called_once_with(original_path, is_directory=True)
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0].status, "converted")
+            self.assertEqual(captured[0].path, converted_path)
+            self.assertFalse(os.path.exists(original_path))
+            self.assertTrue(os.path.isdir(converted_path))
 
     def test_handle_passes_conflict_result_to_callback(self):
         with tempfile.TemporaryDirectory() as tmp:
