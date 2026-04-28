@@ -1,4 +1,5 @@
 import os
+import sys
 import tempfile
 import unicodedata
 import unittest
@@ -173,6 +174,7 @@ class ConverterTests(unittest.TestCase):
                 self.assertFalse(os.path.exists(expected_path))
             self.assertFalse(any(name.startswith("__nfc_tmp_") for name in os.listdir(tmp)))
 
+    @unittest.skipIf(sys.platform == "win32", "Windows symlink behavior varies by runner")
     def test_convert_file_preserves_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:
             target_path = os.path.join(tmp, "target.txt")
@@ -192,6 +194,7 @@ class ConverterTests(unittest.TestCase):
             self.assertTrue(os.path.islink(expected_path))
             self.assertTrue(os.path.samefile(os.readlink(expected_path), target_path))
 
+    @unittest.skipIf(sys.platform == "win32", "Windows symlink behavior varies by runner")
     def test_convert_folder_handles_broken_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:
             target_path = os.path.join(tmp, "missing-target.txt")

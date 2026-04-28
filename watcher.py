@@ -33,6 +33,7 @@ class NFDHandler(FileSystemEventHandler):
     _SETTLE_DELAY = 0.5
     _STABLE_CHECK_INTERVAL = 0.2
     _STABLE_TIMEOUT = 3.0
+    _WORKER_JOIN_TIMEOUT = 1.0
 
     def __init__(
         self,
@@ -153,6 +154,9 @@ class NFDHandler(FileSystemEventHandler):
             self._convert_path(path, is_directory)
 
     def _convert_path(self, path: str, is_directory: bool):
+        if self._is_closed():
+            return
+
         actual_path = self._resolve_actual_path(path)
         actual_name = os.path.basename(actual_path)
 
@@ -163,8 +167,11 @@ class NFDHandler(FileSystemEventHandler):
         if not _path_exists(actual_path):
             return
         if self.wait_for_stable and not self._wait_until_stable(actual_path):
-            if _path_exists(actual_path):
+            if not self._is_closed() and _path_exists(actual_path):
                 self._schedule_conversion(actual_path, is_directory)
+            return
+
+        if self._is_closed():
             return
 
         result = convert_file(actual_path)
@@ -177,6 +184,8 @@ class NFDHandler(FileSystemEventHandler):
         stable_count = 0
 
         while time.monotonic() < deadline:
+            if self._is_closed():
+                return False
             signature = self._path_signature(path)
             if signature is None:
                 return False
@@ -199,6 +208,10 @@ class NFDHandler(FileSystemEventHandler):
             return None
         return (stat.st_mode, stat.st_size, stat.st_mtime_ns)
 
+    def _is_closed(self) -> bool:
+        with self._pending_condition:
+            return self._closed
+
     def close(self):
         """예약된 변환을 취소하고 worker 스레드를 정리한다."""
         with self._pending_condition:
@@ -206,7 +219,7 @@ class NFDHandler(FileSystemEventHandler):
             self._pending.clear()
             self._pending_condition.notify_all()
         if self._worker and self._worker.is_alive():
-            self._worker.join()
+            self._worker.join(self._WORKER_JOIN_TIMEOUT)
 
 
 class FolderWatcher:

@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unicodedata
 import unittest
 from unittest.mock import patch
@@ -113,6 +114,48 @@ class WatcherTests(unittest.TestCase):
 
         self.assertFalse(handler._is_duplicate(path))
         self.assertTrue(handler._is_duplicate(path))
+
+    def test_async_worker_converts_scheduled_path_after_settle_delay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            captured = []
+            handler = NFDHandler(
+                captured.append,
+                settle_delay=0.01,
+                wait_for_stable=False,
+            )
+            self.addCleanup(handler.close)
+
+            original_path = os.path.join(tmp, nfd_name("비동기.txt"))
+            with open(original_path, "w", encoding="utf-8") as f:
+                f.write("content")
+
+            handler._handle(original_path, is_directory=False)
+
+            deadline = time.monotonic() + 1.0
+            while not captured and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0].status, "converted")
+
+    def test_close_cancels_pending_async_conversion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            captured = []
+            handler = NFDHandler(
+                captured.append,
+                settle_delay=10.0,
+                wait_for_stable=False,
+            )
+
+            original_path = os.path.join(tmp, nfd_name("취소.txt"))
+            with open(original_path, "w", encoding="utf-8") as f:
+                f.write("content")
+
+            handler._handle(original_path, is_directory=False)
+            handler.close()
+
+            self.assertEqual(captured, [])
+            self.assertFalse(handler._worker.is_alive())
 
 
 if __name__ == "__main__":
