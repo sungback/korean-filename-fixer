@@ -11,9 +11,19 @@ import json
 import logging
 import os
 import queue
+import sys
 import threading
-import tkinter as tk
-from tkinter import filedialog, scrolledtext, ttk
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog, scrolledtext, ttk
+    _TKINTER_AVAILABLE = True
+    _TKINTER_IMPORT_ERROR = None
+except ImportError as e:
+    tk = None
+    filedialog = scrolledtext = ttk = None
+    _TKINTER_AVAILABLE = False
+    _TKINTER_IMPORT_ERROR = e
 
 try:
     from AppKit import (NSStatusBar, NSVariableStatusItemLength,
@@ -87,8 +97,13 @@ from autostart import (
 from watcher import FolderWatcher
 
 
-class App(tk.Tk):
+class App(tk.Tk if _TKINTER_AVAILABLE else object):
     def __init__(self):
+        if not _TKINTER_AVAILABLE:
+            raise RuntimeError(
+                "tkinter를 사용할 수 없습니다. Tk가 포함된 Python으로 실행하세요."
+            ) from _TKINTER_IMPORT_ERROR
+
         super().__init__()
         self.title("Korean Filename Fixer")
         self.resizable(True, True)
@@ -110,8 +125,7 @@ class App(tk.Tk):
         self._poll_queue()
         self._health_check()
         self._setup_tray()
-        # 독 아이콘 클릭(창이 숨겨진 상태) 시 창을 복원한다
-        self.createcommand("::tk::mac::ReopenApplication", self._show_window)
+        self._register_reopen_command()
 
     def _is_dark_mode(self) -> bool:
         """시스템 테마가 다크 모드인지 감지한다."""
@@ -131,6 +145,15 @@ class App(tk.Tk):
         return {"bg": "#ffffff", "fg": "#333333",
                 "converted": "#007700", "preview": "#005fcc",
                 "conflict": "#b35a00", "error": "#cc0000"}
+
+    def _register_reopen_command(self):
+        """macOS 독 아이콘 클릭(창이 숨겨진 상태) 시 창을 복원한다."""
+        if sys.platform != "darwin":
+            return
+        try:
+            self.createcommand("::tk::mac::ReopenApplication", self._show_window)
+        except tk.TclError:
+            logging.warning("macOS reopen command 등록 실패", exc_info=True)
 
     # ─── UI 구성 ──────────────────────────────────────────────
 
@@ -448,7 +471,11 @@ class App(tk.Tk):
     def _run_startup_scan(self, folder: str, exclude_patterns: list[str]):
         """백그라운드 스레드에서 시작 시 자동 스캔을 실행한다."""
         try:
-            results = convert_folder(folder, exclude_patterns=exclude_patterns)
+            results = convert_folder(
+                folder,
+                exclude_patterns=exclude_patterns,
+                include_root=True,
+            )
             self._cmd_queue.put(("startup_scan_done", results, folder))
         except Exception as e:
             self._cmd_queue.put(("startup_scan_failed", folder, str(e)))
@@ -480,7 +507,11 @@ class App(tk.Tk):
     def _run_preview(self, folder: str, resume_watch: bool, exclude_patterns: list[str]):
         """백그라운드 스레드에서 미리보기를 계산하고 결과를 메인 스레드에 전달한다."""
         try:
-            results = preview_folder(folder, exclude_patterns=exclude_patterns)
+            results = preview_folder(
+                folder,
+                exclude_patterns=exclude_patterns,
+                include_root=True,
+            )
             self._cmd_queue.put(("preview_done", results, folder, resume_watch))
         except Exception as e:
             self._cmd_queue.put(("preview_failed", folder, resume_watch, str(e)))
@@ -515,10 +546,36 @@ class App(tk.Tk):
     def _run_batch_convert(self, folder: str, resume_watch: bool, exclude_patterns: list[str]):
         """백그라운드 스레드에서 일괄 변환을 실행하고 결과를 메인 스레드에 전달한다."""
         try:
-            results = convert_folder(folder, exclude_patterns=exclude_patterns)
+            results = convert_folder(
+                folder,
+                exclude_patterns=exclude_patterns,
+                include_root=True,
+            )
             self._cmd_queue.put(("batch_done", results, folder, resume_watch))
         except Exception as e:
             self._cmd_queue.put(("batch_failed", folder, resume_watch, str(e)))
+
+    def _folder_after_results(self, folder: str, results: list) -> str:
+        """선택한 루트 폴더가 변환되었으면 변환 후 경로를 반환한다."""
+        parent = os.path.dirname(folder)
+        original_name = os.path.basename(folder)
+        for result in results:
+            if (
+                result.status == "converted"
+                and result.original == original_name
+                and os.path.dirname(result.path) == parent
+            ):
+                return result.path
+        return folder
+
+    def _sync_folder_after_conversion(self, folder: str, results: list) -> str:
+        new_folder = self._folder_after_results(folder, results)
+        if new_folder != folder:
+            self.folder_var.set(new_folder)
+            if self.remember_var.get():
+                self._save_config()
+            self._log(f"감시 폴더 경로 갱신: {new_folder}", "info")
+        return new_folder
 
     def _on_batch_done(self, results: list, folder: str, resume_watch: bool):
         """일괄 변환 완료 후 결과를 표시하고 필요하면 감시를 재개한다."""
@@ -538,6 +595,7 @@ class App(tk.Tk):
         self._log(summary, "info")
         self.btn_once.config(state="normal")
 
+        folder = self._sync_folder_after_conversion(folder, results)
         if resume_watch:
             self._resume_watch(folder)
 
@@ -595,6 +653,7 @@ class App(tk.Tk):
         self.status_var.set(summary)
         self._log(summary, "info")
         self._set_startup_scan_running(False)
+        self._sync_folder_after_conversion(folder, results)
         self._start_watch()
 
     def _on_startup_scan_failed(self, folder: str, error: str):

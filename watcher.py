@@ -15,7 +15,14 @@ import unicodedata
 from typing import Callable
 
 from watchdog.events import FileSystemEventHandler
-from converter import clean_exclude_patterns, convert_file, is_nfd, should_exclude_path, should_ignore_name
+from converter import (
+    _path_exists,
+    clean_exclude_patterns,
+    convert_file,
+    is_nfd,
+    should_exclude_path,
+    should_ignore_name,
+)
 
 
 class NFDHandler(FileSystemEventHandler):
@@ -23,13 +30,37 @@ class NFDHandler(FileSystemEventHandler):
 
     # FSEvents는 같은 파일에 이벤트를 연속으로 여러 번 발생시킬 수 있어 중복 방지 윈도우를 둔다
     _DEDUP_WINDOW = 0.2
+    _SETTLE_DELAY = 0.5
+    _STABLE_CHECK_INTERVAL = 0.2
+    _STABLE_TIMEOUT = 3.0
 
-    def __init__(self, callback: Callable, exclude_patterns=None):
+    def __init__(
+        self,
+        callback: Callable,
+        exclude_patterns=None,
+        settle_delay: float | None = None,
+        wait_for_stable: bool = True,
+        synchronous: bool = False,
+    ):
         super().__init__()
         self.callback = callback
         self.exclude_patterns = clean_exclude_patterns(exclude_patterns)
+        self.settle_delay = self._SETTLE_DELAY if settle_delay is None else settle_delay
+        self.wait_for_stable = wait_for_stable
+        self.synchronous = synchronous
         self._recent: dict[str, float] = {}
         self._dedup_lock = threading.Lock()
+        self._pending: dict[str, tuple[bool, float]] = {}
+        self._pending_condition = threading.Condition()
+        self._closed = False
+        self._worker = None
+        if not self.synchronous:
+            self._worker = threading.Thread(
+                target=self._process_pending,
+                name="NFDHandlerWorker",
+                daemon=True,
+            )
+            self._worker.start()
 
     def on_created(self, event):
         self._handle(event.src_path, is_directory=event.is_directory)
@@ -85,9 +116,97 @@ class NFDHandler(FileSystemEventHandler):
             return
         if self._is_duplicate(actual_path):
             return
-        if os.path.exists(actual_path):
-            result = convert_file(actual_path)
-            self.callback(result)
+        if _path_exists(actual_path):
+            self._schedule_conversion(actual_path, is_directory)
+
+    def _schedule_conversion(self, path: str, is_directory: bool):
+        """변환 작업을 worker에 예약한다. 같은 경로는 마지막 이벤트 기준으로 지연된다."""
+        if self.synchronous:
+            self._convert_path(path, is_directory)
+            return
+
+        due_at = time.monotonic() + self.settle_delay
+        with self._pending_condition:
+            if self._closed:
+                return
+            self._pending[path] = (is_directory, due_at)
+            self._pending_condition.notify()
+
+    def _process_pending(self):
+        while True:
+            with self._pending_condition:
+                while not self._pending and not self._closed:
+                    self._pending_condition.wait()
+                if self._closed:
+                    return
+
+                path, (is_directory, due_at) = min(
+                    self._pending.items(),
+                    key=lambda item: item[1][1],
+                )
+                wait_time = due_at - time.monotonic()
+                if wait_time > 0:
+                    self._pending_condition.wait(wait_time)
+                    continue
+                self._pending.pop(path, None)
+
+            self._convert_path(path, is_directory)
+
+    def _convert_path(self, path: str, is_directory: bool):
+        actual_path = self._resolve_actual_path(path)
+        actual_name = os.path.basename(actual_path)
+
+        if should_exclude_path(actual_path, self.exclude_patterns, is_directory=is_directory):
+            return
+        if should_ignore_name(actual_name) or not is_nfd(actual_name):
+            return
+        if not _path_exists(actual_path):
+            return
+        if self.wait_for_stable and not self._wait_until_stable(actual_path):
+            if _path_exists(actual_path):
+                self._schedule_conversion(actual_path, is_directory)
+            return
+
+        result = convert_file(actual_path)
+        self.callback(result)
+
+    def _wait_until_stable(self, path: str) -> bool:
+        """파일/폴더가 짧은 시간 동안 변경되지 않을 때까지 기다린다."""
+        deadline = time.monotonic() + self._STABLE_TIMEOUT
+        previous = None
+        stable_count = 0
+
+        while time.monotonic() < deadline:
+            signature = self._path_signature(path)
+            if signature is None:
+                return False
+            if signature == previous:
+                stable_count += 1
+                if stable_count >= 2:
+                    return True
+            else:
+                previous = signature
+                stable_count = 0
+            time.sleep(self._STABLE_CHECK_INTERVAL)
+
+        return False
+
+    @staticmethod
+    def _path_signature(path: str):
+        try:
+            stat = os.stat(path, follow_symlinks=False)
+        except OSError:
+            return None
+        return (stat.st_mode, stat.st_size, stat.st_mtime_ns)
+
+    def close(self):
+        """예약된 변환을 취소하고 worker 스레드를 정리한다."""
+        with self._pending_condition:
+            self._closed = True
+            self._pending.clear()
+            self._pending_condition.notify_all()
+        if self._worker and self._worker.is_alive():
+            self._worker.join()
 
 
 class FolderWatcher:
@@ -97,6 +216,7 @@ class FolderWatcher:
         self.callback = callback
         self.exclude_patterns: list[str] = []
         self._observer = None
+        self._handler = None
         self._lock = threading.RLock()
 
     def start(self, folder: str, exclude_patterns=None):
@@ -106,8 +226,15 @@ class FolderWatcher:
             self.exclude_patterns = clean_exclude_patterns(exclude_patterns)
             handler = NFDHandler(self.callback, self.exclude_patterns)
             self._observer = self._make_observer()
-            self._observer.schedule(handler, folder, recursive=True)
-            self._observer.start()
+            self._handler = handler
+            try:
+                self._observer.schedule(handler, folder, recursive=True)
+                self._observer.start()
+            except Exception:
+                handler.close()
+                self._handler = None
+                self._observer = None
+                raise
             logging.info(f"Watching: {folder} (exclude={self.exclude_patterns})")
 
     def stop(self):
@@ -116,7 +243,10 @@ class FolderWatcher:
             if self._observer and self._observer.is_alive():
                 self._observer.stop()
                 self._observer.join()
+            if self._handler:
+                self._handler.close()
             self._observer = None
+            self._handler = None
 
     @property
     def is_running(self) -> bool:

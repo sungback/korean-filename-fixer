@@ -19,13 +19,21 @@ class FakeEvent:
 
 
 class WatcherTests(unittest.TestCase):
+    def make_handler(self, callback, exclude_patterns=None):
+        return NFDHandler(
+            callback,
+            exclude_patterns=exclude_patterns,
+            wait_for_stable=False,
+            synchronous=True,
+        )
+
     def test_resolve_actual_path_finds_nfd_name_from_nfc_event_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             actual_path = os.path.join(tmp, nfd_name("감시.txt"))
             with open(actual_path, "w", encoding="utf-8") as f:
                 f.write("watch")
 
-            handler = NFDHandler(lambda result: None)
+            handler = self.make_handler(lambda result: None)
             resolved = handler._resolve_actual_path(os.path.join(tmp, "감시.txt"))
 
             self.assertEqual(resolved, actual_path)
@@ -33,7 +41,7 @@ class WatcherTests(unittest.TestCase):
     def test_handle_converts_nfd_file_and_calls_callback(self):
         with tempfile.TemporaryDirectory() as tmp:
             captured = []
-            handler = NFDHandler(captured.append)
+            handler = self.make_handler(captured.append)
 
             original_path = os.path.join(tmp, nfd_name("한글.txt"))
             with open(original_path, "w", encoding="utf-8") as f:
@@ -55,7 +63,7 @@ class WatcherTests(unittest.TestCase):
             with open(original_path, "w", encoding="utf-8") as f:
                 f.write("ignore")
 
-            handler = NFDHandler(captured.append, exclude_patterns=[".git"])
+            handler = self.make_handler(captured.append, exclude_patterns=[".git"])
             handler._handle(original_path, is_directory=False)
 
             self.assertEqual(captured, [])
@@ -68,7 +76,7 @@ class WatcherTests(unittest.TestCase):
             os.makedirs(original_path)
             captured = []
 
-            handler = NFDHandler(captured.append)
+            handler = self.make_handler(captured.append)
 
             handler.on_created(FakeEvent(original_path, is_directory=True))
 
@@ -80,7 +88,7 @@ class WatcherTests(unittest.TestCase):
     def test_handle_passes_conflict_result_to_callback(self):
         with tempfile.TemporaryDirectory() as tmp:
             captured = []
-            handler = NFDHandler(captured.append)
+            handler = self.make_handler(captured.append)
 
             original_path = os.path.join(tmp, nfd_name("충돌.txt"))
             with open(original_path, "w", encoding="utf-8") as f:
@@ -100,7 +108,7 @@ class WatcherTests(unittest.TestCase):
             self.assertEqual(captured[0].status, "conflict")
 
     def test_is_duplicate_returns_true_for_repeated_path_within_window(self):
-        handler = NFDHandler(lambda result: None)
+        handler = self.make_handler(lambda result: None)
         path = "/tmp/example.txt"
 
         self.assertFalse(handler._is_duplicate(path))

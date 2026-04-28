@@ -255,7 +255,7 @@ def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> 
     return ConvertResult(filepath, name, nfc_name, "error", msg)
 
 
-def _collect_entries(folder: str, exclude_patterns=None) -> list[str]:
+def _collect_entries(folder: str, exclude_patterns=None, include_root: bool = False) -> list[str]:
     """제외 패턴을 적용해 변환 후보 경로를 수집한다."""
     exclude_patterns = clean_exclude_patterns(exclude_patterns)
     if should_exclude_path(folder, exclude_patterns, is_directory=True):
@@ -279,16 +279,23 @@ def _collect_entries(folder: str, exclude_patterns=None) -> list[str]:
         for name in dirs:
             all_entries.append(os.path.join(root, name))
 
+    if include_root:
+        all_entries.append(folder)
+
     # 깊은 경로(구분자 수가 많은 것)를 먼저 처리
     all_entries.sort(key=lambda p: p.count(os.sep), reverse=True)
     return all_entries
 
 
-def preview_folder(folder: str, exclude_patterns=None) -> list[ConvertResult]:
+def preview_folder(
+    folder: str,
+    exclude_patterns=None,
+    include_root: bool = False,
+) -> list[ConvertResult]:
     """폴더 하위의 모든 파일/폴더명을 스캔해 변환 예정 목록만 계산한다."""
     results = []
-    for entry in _collect_entries(folder, exclude_patterns):
-        if not os.path.exists(entry):
+    for entry in _collect_entries(folder, exclude_patterns, include_root=include_root):
+        if not _path_exists(entry):
             continue
         if should_ignore_name(os.path.basename(entry)):
             continue
@@ -296,16 +303,20 @@ def preview_folder(folder: str, exclude_patterns=None) -> list[ConvertResult]:
     return results
 
 
-def convert_folder(folder: str, exclude_patterns=None) -> list[ConvertResult]:
+def convert_folder(
+    folder: str,
+    exclude_patterns=None,
+    include_root: bool = False,
+) -> list[ConvertResult]:
     """폴더 하위의 모든 파일/폴더명을 NFD → NFC로 변환한다.
 
     깊은 경로부터 처리해 상위 폴더 rename 시 하위 경로가 무효화되는 것을 방지한다.
     """
-    all_entries = _collect_entries(folder, exclude_patterns)
+    all_entries = _collect_entries(folder, exclude_patterns, include_root=include_root)
 
     results = []
     for entry in all_entries:
-        if not os.path.exists(entry):
+        if not _path_exists(entry):
             continue
         if should_ignore_name(os.path.basename(entry)):
             continue

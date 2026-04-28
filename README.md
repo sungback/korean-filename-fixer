@@ -34,7 +34,7 @@ korean-filename-fixer/
 ├── gui.py           # tkinter 기반 GUI (App 클래스)
 ├── converter.py     # NFD→NFC 변환 로직 (ConvertResult, convert_folder 등)
 ├── watcher.py       # watchdog 기반 실시간 폴더 감시 (FolderWatcher)
-├── build.sh         # PyInstaller 빌드 스크립트 (macOS onedir / Windows onefile)
+├── build.sh         # PyInstaller 빌드 스크립트 (macOS onedir / Windows onedir)
 └── requirements.txt # 의존성 목록
 ```
 

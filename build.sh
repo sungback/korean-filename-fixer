@@ -6,12 +6,16 @@ set -e
 APP_NAME="KoreanFilenameFixer"
 DIST_DIR="dist"
 BUILD_DIR="build"
+PYTHON_BIN="${PYTHON:-python}"
 
 echo "=== 의존성 설치 ==="
-pip install -r requirements.txt
+"$PYTHON_BIN" -m pip install -r requirements.txt
+
+echo "=== Tkinter 확인 ==="
+"$PYTHON_BIN" -c "import tkinter"
 
 echo "=== 테스트 실행 ==="
-python -m unittest discover -s tests -v
+"$PYTHON_BIN" -m unittest discover -s tests -v
 
 echo "=== PyInstaller 빌드 ==="
 if [[ "$(uname)" == "Darwin" ]]; then
@@ -23,7 +27,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
   TMP_SPEC="$TMP_ROOT/spec"
   trap 'rm -rf "$TMP_ROOT"' EXIT
 
-  pyinstaller \
+  "$PYTHON_BIN" -m PyInstaller \
     -y \
     --windowed \
     $BUNDLE_OPT \
@@ -54,7 +58,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
 else
   # Windows: onedir — 디렉터리 배포 (바이러스 오진 방지)
   BUNDLE_OPT="--onedir"
-  pyinstaller \
+  "$PYTHON_BIN" -m PyInstaller \
     -y \
     --windowed \
     $BUNDLE_OPT \

@@ -192,6 +192,43 @@ class ConverterTests(unittest.TestCase):
             self.assertTrue(os.path.islink(expected_path))
             self.assertTrue(os.path.samefile(os.readlink(expected_path), target_path))
 
+    def test_convert_folder_handles_broken_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target_path = os.path.join(tmp, "missing-target.txt")
+            original_path = os.path.join(tmp, nfd_name("깨진링크.txt"))
+            try:
+                os.symlink(target_path, original_path)
+            except (OSError, NotImplementedError) as e:
+                self.skipTest(f"symlink unavailable: {e}")
+
+            results = convert_folder(tmp)
+            expected_path = os.path.join(tmp, "깨진링크.txt")
+            converted = [result for result in results if result.status == "converted"]
+
+            self.assertEqual(len(converted), 1)
+            self.assertTrue(os.path.islink(expected_path))
+            self.assertEqual(os.readlink(expected_path), target_path)
+
+    def test_convert_folder_can_include_selected_root_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root_path = os.path.join(tmp, nfd_name("루트폴더"))
+            os.makedirs(root_path)
+            child_path = os.path.join(root_path, nfd_name("하위.txt"))
+            with open(child_path, "w", encoding="utf-8") as f:
+                f.write("child")
+
+            results = convert_folder(root_path, include_root=True)
+            expected_root = os.path.join(tmp, "루트폴더")
+            expected_child = os.path.join(expected_root, "하위.txt")
+            converted_names = {
+                result.converted for result in results if result.status == "converted"
+            }
+
+            self.assertIn("루트폴더", converted_names)
+            self.assertIn("하위.txt", converted_names)
+            self.assertTrue(os.path.isdir(expected_root))
+            self.assertTrue(os.path.exists(expected_child))
+
     def test_preview_folder_reports_preview_and_skipped_results(self):
         with tempfile.TemporaryDirectory() as tmp:
             preview_path = os.path.join(tmp, nfd_name("예정.txt"))
