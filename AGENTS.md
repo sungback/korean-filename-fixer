@@ -47,7 +47,7 @@ bash build.sh
 git tag vX.X.X && git push origin main && git push origin vX.X.X
 ```
 
-- 태그 규칙: `v{major}.{minor}.{patch}` — 최신 `v1.10.7`
+- 태그 규칙: `v{major}.{minor}.{patch}` — 최신 `v1.11.0`
 - 기능 추가: minor 버전 업, 버그 수정/리팩토링: patch 버전 업
 - **소스 기능 변경이 없을 때(문서, 설정 등)는 태그 없이 push만**
 
