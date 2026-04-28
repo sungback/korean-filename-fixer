@@ -7,6 +7,25 @@ APP_NAME="KoreanFilenameFixer"
 DIST_DIR="dist"
 BUILD_DIR="build"
 PYTHON_BIN="${PYTHON:-python}"
+MACOS_BUNDLE_ID="${MACOS_BUNDLE_ID:-KoreanFilenameFixer}"
+MACOS_SIGN_IDENTITY="${MACOS_SIGN_IDENTITY:-}"
+MACOS_ENTITLEMENTS_FILE="${MACOS_ENTITLEMENTS_FILE:-}"
+MACOS_NOTARIZE="${MACOS_NOTARIZE:-0}"
+MACOS_NOTARY_PROFILE="${MACOS_NOTARY_PROFILE:-}"
+MACOS_NOTARY_KEYCHAIN="${MACOS_NOTARY_KEYCHAIN:-}"
+
+if [[ "$(uname)" == "Darwin" && "$MACOS_NOTARIZE" == "1" ]]; then
+  if [[ -z "$MACOS_SIGN_IDENTITY" ]]; then
+    echo "오류: MACOS_NOTARIZE=1 requires MACOS_SIGN_IDENTITY." >&2
+    exit 1
+  fi
+  if [[ -z "$MACOS_NOTARY_PROFILE" ]]; then
+    echo "오류: MACOS_NOTARIZE=1 requires MACOS_NOTARY_PROFILE." >&2
+    exit 1
+  fi
+  xcrun --find notarytool >/dev/null
+  xcrun --find stapler >/dev/null
+fi
 
 echo "=== 의존성 설치 ==="
 "$PYTHON_BIN" -m pip install -r requirements.txt
@@ -27,16 +46,28 @@ if [[ "$(uname)" == "Darwin" ]]; then
   TMP_SPEC="$TMP_ROOT/spec"
   trap 'rm -rf "$TMP_ROOT"' EXIT
 
-  "$PYTHON_BIN" -m PyInstaller \
+  PYINSTALLER_ARGS=(
     -y \
     --windowed \
-    $BUNDLE_OPT \
+    "$BUNDLE_OPT" \
     --name "$APP_NAME" \
     --clean \
+    --osx-bundle-identifier "$MACOS_BUNDLE_ID" \
     --distpath "$TMP_DIST" \
     --workpath "$TMP_BUILD" \
-    --specpath "$TMP_SPEC" \
-    main.py
+    --specpath "$TMP_SPEC"
+  )
+
+  if [[ -n "$MACOS_SIGN_IDENTITY" ]]; then
+    echo "=== Developer ID 서명 활성화 ==="
+    PYINSTALLER_ARGS+=(--codesign-identity "$MACOS_SIGN_IDENTITY")
+  fi
+
+  if [[ -n "$MACOS_ENTITLEMENTS_FILE" ]]; then
+    PYINSTALLER_ARGS+=(--osx-entitlements-file "$MACOS_ENTITLEMENTS_FILE")
+  fi
+
+  "$PYTHON_BIN" -m PyInstaller "${PYINSTALLER_ARGS[@]}" main.py
 
   echo "=== macOS 번들 검증 ==="
   codesign --verify --deep --strict "$TMP_DIST/$APP_NAME.app"
@@ -55,6 +86,29 @@ if [[ "$(uname)" == "Darwin" ]]; then
     COPYFILE_DISABLE=1 ditto -c -k --norsrc --keepParent \
       "$APP_NAME.app" "$OLDPWD/$DIST_DIR/$APP_NAME.app.zip"
   )
+
+  if [[ "$MACOS_NOTARIZE" == "1" ]]; then
+    NOTARY_ARGS=(--keychain-profile "$MACOS_NOTARY_PROFILE")
+    if [[ -n "$MACOS_NOTARY_KEYCHAIN" ]]; then
+      NOTARY_ARGS+=(--keychain "$MACOS_NOTARY_KEYCHAIN")
+    fi
+
+    echo "=== Apple notarization 제출 ==="
+    xcrun notarytool submit "$DIST_DIR/$APP_NAME.app.zip" \
+      "${NOTARY_ARGS[@]}" \
+      --wait
+
+    echo "=== Notarization ticket staple ==="
+    xcrun stapler staple "$DIST_DIR/$APP_NAME.app"
+    xcrun stapler validate "$DIST_DIR/$APP_NAME.app"
+
+    (
+      cd "$DIST_DIR"
+      rm -f "$APP_NAME.app.zip"
+      COPYFILE_DISABLE=1 ditto -c -k --norsrc --keepParent \
+        "$APP_NAME.app" "$APP_NAME.app.zip"
+    )
+  fi
 else
   # Windows: onedir — 디렉터리 배포 (바이러스 오진 방지)
   BUNDLE_OPT="--onedir"

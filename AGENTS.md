@@ -19,6 +19,7 @@ macOS에서 한글 파일명을 NFD → NFC로 변환해 Windows/Linux와의 호
 | `watcher.py` | 실시간 폴더 감시 (NFDHandler, FolderWatcher) |
 | `gui.py` | tkinter GUI, 트레이 아이콘, 설정 저장 |
 | `scripts/smoke_google_drive.py` | Google Drive 실폴더 수동 스모크 테스트 |
+| `docs/macos-signing-notarization.md` | macOS Developer ID 서명·공증 준비 문서 |
 
 ## 빌드
 ```bash

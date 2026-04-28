@@ -80,6 +80,8 @@ GitHub Release에서는 보조적으로 Windows `.exe` 아티팩트도 함께 �
 > 시스템 설정 → 개인 정보 보호 및 보안 → '확인 없이 열기' 클릭
 > 또는 터미널에서: `xattr -cr dist/KoreanFilenameFixer.app`
 
+Developer ID 서명과 Apple notarization 준비 절차는 [macOS Code Signing and Notarization](docs/macos-signing-notarization.md)을 참고하세요.
+
 ## 사용 방법
 
 1. 앱 실행 후 **[선택]** 버튼으로 대상 폴더를 지정합니다.
