@@ -13,6 +13,7 @@ import os
 import queue
 import sys
 import threading
+import unicodedata
 
 try:
     import tkinter as tk
@@ -59,11 +60,149 @@ if _APPKIT:
 
 
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".korean_filename_fixer.json")
+STARTUP_SCAN_ENTRY_LIMIT = 5000
+_GOOGLE_DRIVE_ROOT_NAMES = ("내 드라이브", "My Drive")
+_HOME_SYNC_ROOT_NAMES = (
+    "내 드라이브",
+    "My Drive",
+    "Google Drive",
+    "Dropbox",
+    "OneDrive",
+    "iCloud Drive",
+)
 
 
-def should_run_startup_scan(folder: str, scan_on_startup: bool) -> bool:
+def _nfc(value: str) -> str:
+    return unicodedata.normalize("NFC", value)
+
+
+def _home_dir() -> str:
+    return _nfc(os.path.abspath(os.path.expanduser("~")))
+
+
+def _path_parts(path: str) -> list[str]:
+    normalized = os.path.normpath(_nfc(path))
+    return [part for part in normalized.split(os.sep) if part]
+
+
+def _cloud_storage_parts(path: str) -> list[str]:
+    parts = _path_parts(path)
+    for index in range(len(parts) - 1):
+        if parts[index] == "Library" and parts[index + 1] == "CloudStorage":
+            return parts[index + 2:]
+    return []
+
+
+def _is_cloud_storage_root(path: str) -> bool:
+    parts = _cloud_storage_parts(path)
+    if not parts:
+        return False
+
+    provider = parts[0]
+    if provider.startswith("GoogleDrive-"):
+        return len(parts) == 1 or (
+            len(parts) == 2 and parts[1] in _GOOGLE_DRIVE_ROOT_NAMES
+        )
+    if provider == "Dropbox" or provider.startswith("OneDrive-"):
+        return len(parts) == 1
+    return False
+
+
+def is_likely_sync_root(folder: str) -> bool:
+    """Google Drive/Dropbox/OneDrive/iCloud의 루트급 폴더로 보이면 True."""
+    if not folder:
+        return False
+
+    raw_path = os.path.abspath(os.path.expanduser(folder))
+    paths = {_nfc(raw_path), _nfc(os.path.realpath(raw_path))}
+    home = _home_dir()
+    icloud_root = os.path.join(
+        home, "Library", "Mobile Documents", "com~apple~CloudDocs"
+    )
+
+    for path in paths:
+        if _is_cloud_storage_root(path) or path == icloud_root:
+            return True
+
+        parent = os.path.dirname(path)
+        name = os.path.basename(path)
+        if parent == home and (
+            name in _HOME_SYNC_ROOT_NAMES or name.startswith("OneDrive")
+        ):
+            return True
+
+    return False
+
+
+def _entry_count_exceeds_limit(folder: str, limit: int, exclude_patterns=None) -> bool:
+    if limit < 1:
+        return True
+
+    count = 0
+    stack = [folder]
+    exclude_patterns = clean_exclude_patterns(exclude_patterns)
+
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        is_directory = entry.is_dir(follow_symlinks=False)
+                    except OSError:
+                        is_directory = False
+
+                    if should_exclude_path(
+                        entry.path,
+                        exclude_patterns,
+                        is_directory=is_directory,
+                    ):
+                        continue
+
+                    count += 1
+                    if count > limit:
+                        return True
+                    if is_directory:
+                        stack.append(entry.path)
+        except OSError:
+            continue
+
+    return False
+
+
+def startup_scan_skip_reason(
+    folder: str,
+    scan_on_startup: bool,
+    exclude_patterns=None,
+) -> str:
+    if not scan_on_startup or not folder or not os.path.isdir(folder):
+        return ""
+
+    if is_likely_sync_root(folder):
+        return "동기화 루트로 보이는 폴더입니다."
+
+    if _entry_count_exceeds_limit(
+        folder,
+        STARTUP_SCAN_ENTRY_LIMIT,
+        exclude_patterns,
+    ):
+        return f"항목이 {STARTUP_SCAN_ENTRY_LIMIT}개를 초과하는 큰 폴더입니다."
+
+    return ""
+
+
+def should_run_startup_scan(
+    folder: str,
+    scan_on_startup: bool,
+    exclude_patterns=None,
+) -> bool:
     """유효한 저장 폴더가 있고 설정이 켜져 있으면 시작 시 자동 스캔을 실행한다."""
-    return bool(scan_on_startup and folder and os.path.isdir(folder))
+    return bool(
+        scan_on_startup
+        and folder
+        and os.path.isdir(folder)
+        and not startup_scan_skip_reason(folder, scan_on_startup, exclude_patterns)
+    )
 
 
 def setup_logging():
@@ -86,6 +225,7 @@ from converter import (
     convert_folder,
     nfd_to_visual,
     preview_folder,
+    should_exclude_path,
 )
 from autostart import (
     disable_autostart,
@@ -311,9 +451,21 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
                 self.folder_var.set(folder)
                 self.remember_var.set(True)
                 self.status_var.set("저장된 설정을 불러왔습니다.")
-                if should_run_startup_scan(folder, self.scan_on_startup_var.get()):
+                skip_reason = startup_scan_skip_reason(
+                    folder,
+                    self.scan_on_startup_var.get(),
+                    exclude_patterns,
+                )
+                if self.scan_on_startup_var.get() and not skip_reason:
                     self._start_startup_scan(folder)
                 else:
+                    if skip_reason:
+                        self.status_var.set("시작 시 자동 스캔 건너뜀 — 감시만 시작합니다.")
+                        self._log(
+                            f"시작 시 자동 스캔 건너뜀: {skip_reason} "
+                            "필요하면 미리보기 후 수동 변환을 실행하세요.",
+                            "info",
+                        )
                     self._start_watch()
         except (FileNotFoundError, json.JSONDecodeError):
             self._sync_autostart_state()

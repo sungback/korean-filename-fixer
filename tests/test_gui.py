@@ -1,9 +1,10 @@
+import os
 import queue
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from gui import App, should_run_startup_scan
+from gui import App, should_run_startup_scan, startup_scan_skip_reason
 
 
 class GuiTests(unittest.TestCase):
@@ -21,6 +22,31 @@ class GuiTests(unittest.TestCase):
     def test_should_run_startup_scan_rejects_missing_folder(self):
         self.assertFalse(should_run_startup_scan("", True))
         self.assertFalse(should_run_startup_scan("/path/does/not/exist", True))
+
+    def test_should_run_startup_scan_skips_likely_sync_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            drive_root = os.path.join(
+                tmp,
+                "Library",
+                "CloudStorage",
+                "GoogleDrive-user@example.com",
+                "\ub0b4 \ub4dc\ub77c\uc774\ube0c",
+            )
+            nested_folder = os.path.join(drive_root, "Project")
+            os.makedirs(nested_folder)
+
+            self.assertFalse(should_run_startup_scan(drive_root, True))
+            self.assertIn("동기화", startup_scan_skip_reason(drive_root, True))
+            self.assertTrue(should_run_startup_scan(nested_folder, True))
+
+    def test_should_run_startup_scan_skips_large_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for index in range(3):
+                open(os.path.join(tmp, f"file-{index}.txt"), "w").close()
+
+            with patch("gui.STARTUP_SCAN_ENTRY_LIMIT", 2):
+                self.assertFalse(should_run_startup_scan(tmp, True))
+                self.assertIn("항목", startup_scan_skip_reason(tmp, True))
 
     def test_run_preview_queues_completion_without_calling_tk_from_worker(self):
         app = self.make_worker_app()

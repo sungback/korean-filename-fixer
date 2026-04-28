@@ -18,6 +18,7 @@ macOS에서 한글 파일명을 NFD → NFC로 변환해 Windows/Linux와의 호
 | `converter.py` | NFD→NFC 변환 로직 (파일/폴더) |
 | `watcher.py` | 실시간 폴더 감시 (NFDHandler, FolderWatcher) |
 | `gui.py` | tkinter GUI, 트레이 아이콘, 설정 저장 |
+| `scripts/smoke_google_drive.py` | Google Drive 실폴더 수동 스모크 테스트 |
 
 ## 빌드
 ```bash
@@ -32,6 +33,7 @@ bash build.sh
   - 폴더: 임시 이름 경유 2단계 rename
 - **미리보기(드라이런)**: 실제 변환 전에 예정 이름과 충돌 여부를 계산해 로그로 확인 가능
 - **시작 시 자동 스캔**: 저장된 감시 폴더가 있으면 앱 시작 직후 누락된 NFD 파일을 한 번 정리한 뒤 감시 시작
+  - 단, 동기화 루트 또는 5000개 초과 큰 폴더로 보이면 자동 스캔은 건너뛰고 실시간 감시만 시작
 - **로그인 시 자동 시작**: macOS는 LaunchAgent plist, Windows는 Run 레지스트리로 로그인 후 앱 자동 실행 지원 (`.app` / `.exe` 배포 실행 기준)
 - **제외 패턴**: `.git`, `node_modules`, `venv` 등 디렉터리 패턴은 일괄 변환과 실시간 감시 모두에서 공통 적용
 - **이벤트 중복 방지**: FSEvents가 동일 파일 이벤트를 연속 발생시키므로 `_DEDUP_WINDOW=0.2s` 적용
