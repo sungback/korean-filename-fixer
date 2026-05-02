@@ -64,11 +64,12 @@ class GuiTests(unittest.TestCase):
         app._start_watch = Mock()
         app._log = Mock()
 
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as config:
-            config.write('{"folder": "/Users/back/내 드라이브"}')
-            config.flush()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = os.path.join(tmp, "config.json")
+            with open(config_path, "w", encoding="utf-8") as config:
+                config.write('{"folder": "/Users/back/내 드라이브"}')
 
-            with patch("gui.CONFIG_PATH", config.name):
+            with patch("gui.CONFIG_PATH", config_path):
                 with patch("gui.os.path.isdir", return_value=True):
                     with patch(
                         "gui.startup_scan_skip_reason",
