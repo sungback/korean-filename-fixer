@@ -20,6 +20,7 @@ from converter import (
     clean_exclude_patterns,
     convert_file,
     is_nfd,
+    plan_file,
     should_exclude_path,
     should_ignore_name,
 )
@@ -113,12 +114,18 @@ class NFDHandler(FileSystemEventHandler):
 
         if should_exclude_path(actual_path, self.exclude_patterns, is_directory=is_directory):
             return
-        if should_ignore_name(actual_name) or not is_nfd(actual_name):
-            return
-        if self._is_duplicate(actual_path):
-            return
         if _path_exists(actual_path):
+            if should_ignore_name(actual_name) or not self._should_convert_path(actual_path, actual_name):
+                return
+            if self._is_duplicate(actual_path):
+                return
             self._schedule_conversion(actual_path, is_directory)
+
+    def _should_convert_path(self, path: str, name: str) -> bool:
+        """로컬 파일명 또는 DriveFS 서버 파일명이 변환 대상인지 확인한다."""
+        if is_nfd(name):
+            return True
+        return plan_file(path).status in {"preview", "conflict"}
 
     def _schedule_conversion(self, path: str, is_directory: bool):
         """변환 작업을 worker에 예약한다. 같은 경로는 마지막 이벤트 기준으로 지연된다."""
@@ -162,9 +169,11 @@ class NFDHandler(FileSystemEventHandler):
 
         if should_exclude_path(actual_path, self.exclude_patterns, is_directory=is_directory):
             return
-        if should_ignore_name(actual_name) or not is_nfd(actual_name):
+        if should_ignore_name(actual_name):
             return
         if not _path_exists(actual_path):
+            return
+        if not self._should_convert_path(actual_path, actual_name):
             return
         if self.wait_for_stable and not self._wait_until_stable(actual_path):
             if not self._is_closed() and _path_exists(actual_path):

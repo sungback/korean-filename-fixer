@@ -258,6 +258,7 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         self._shutting_down = False
         self._startup_scan_in_progress = False
         self._startup_scan_cancel_event: threading.Event | None = None
+        self._watch_paused_for_operation = False
         self._autostart_path = get_autostart_executable_path()
 
         self._build_ui()
@@ -707,6 +708,7 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         self.btn_preview.config(state="disabled")
 
         was_watching = self.watcher.is_running
+        self._watch_paused_for_operation = was_watching
         if was_watching:
             self.watcher.stop()
 
@@ -746,6 +748,7 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         self.btn_once.config(state="disabled")
 
         was_watching = self.watcher.is_running
+        self._watch_paused_for_operation = was_watching
         if was_watching:
             self.watcher.stop()
 
@@ -818,6 +821,8 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         folder = self._sync_folder_after_conversion(folder, results)
         if resume_watch:
             self._resume_watch(folder)
+        else:
+            self._watch_paused_for_operation = False
 
     def _on_batch_failed(self, folder: str, resume_watch: bool, error: str):
         """일괄 변환 실패 후 버튼 상태를 복구하고 필요하면 감시를 재개한다."""
@@ -827,6 +832,8 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
 
         if resume_watch:
             self._resume_watch(folder)
+        else:
+            self._watch_paused_for_operation = False
 
     def _on_preview_done(self, results: list, folder: str, resume_watch: bool):
         """미리보기 완료 후 결과를 표시하고 필요하면 감시를 재개한다."""
@@ -846,6 +853,8 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
 
         if resume_watch:
             self._resume_watch(folder)
+        else:
+            self._watch_paused_for_operation = False
 
     def _on_preview_failed(self, folder: str, resume_watch: bool, error: str):
         """미리보기 실패 후 버튼 상태를 복구하고 필요하면 감시를 재개한다."""
@@ -855,6 +864,8 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
 
         if resume_watch:
             self._resume_watch(folder)
+        else:
+            self._watch_paused_for_operation = False
 
     def _on_startup_scan_done(self, results: list, folder: str):
         """시작 시 자동 스캔 완료 후 결과를 기록하고 감시를 시작한다."""
@@ -893,6 +904,7 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         self.status_var.set(summary)
         self._log(summary, "info")
         self._set_startup_scan_running(False)
+        self._sync_folder_after_conversion(folder, results)
         self._start_watch()
 
     def _on_startup_scan_failed(self, folder: str, error: str):
@@ -913,6 +925,8 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
             self._update_tray_menu_state(watching=True)
         except Exception as e:
             self._log(f"감시 재개 실패: {e}", "error")
+        finally:
+            self._watch_paused_for_operation = False
 
     # ─── 로그 출력 ────────────────────────────────────────────
 
@@ -981,7 +995,12 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
             self._health_check_after_id = None
             return
         should_watch = str(self.btn_stop["state"]) == "normal"
-        if should_watch and not self._startup_scan_in_progress and not self.watcher.is_running:
+        if (
+            should_watch
+            and not self._startup_scan_in_progress
+            and not self._watch_paused_for_operation
+            and not self.watcher.is_running
+        ):
             folder = self.folder_var.get()
             self._log("감시 프로세스가 중단되어 자동으로 재시작합니다.", "error")
             if _APPKIT and hasattr(self, "_status_item"):

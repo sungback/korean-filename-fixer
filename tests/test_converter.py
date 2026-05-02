@@ -221,6 +221,21 @@ class ConverterTests(unittest.TestCase):
             self.assertEqual(len(rename_calls), 2)
             self.assertEqual(wait.call_count, 2)
 
+    def test_convert_directory_waits_for_drivefs_stage_before_final_rename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local_path = os.path.join(tmp, "서버폴더")
+            os.makedirs(local_path)
+            original_cloud_name = nfd_name("서버폴더")
+
+            with patch("converter._drivefs_cloud_filename", return_value=original_cloud_name, create=True):
+                with patch("converter._wait_for_drivefs_cloud_filename", return_value=True, create=True) as wait:
+                    result = convert_file(local_path)
+
+            self.assertEqual(result.status, "converted")
+            self.assertEqual(result.path, local_path)
+            self.assertTrue(os.path.isdir(local_path))
+            self.assertEqual(wait.call_count, 2)
+
     def test_plan_file_reports_conflict_when_target_name_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             original_path = os.path.join(tmp, nfd_name("한글.txt"))

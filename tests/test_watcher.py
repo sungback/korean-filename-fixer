@@ -108,6 +108,24 @@ class WatcherTests(unittest.TestCase):
             self.assertEqual(len(captured), 1)
             self.assertEqual(captured[0].status, "conflict")
 
+    def test_handle_converts_drivefs_cloud_nfd_when_local_name_is_nfc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            captured = []
+            handler = self.make_handler(captured.append)
+
+            local_path = os.path.join(tmp, "서버이름.txt")
+            with open(local_path, "w", encoding="utf-8") as f:
+                f.write("content")
+
+            with patch("converter._drivefs_cloud_filename", return_value=nfd_name("서버이름.txt")):
+                with patch("converter._wait_for_drivefs_cloud_filename", return_value=True):
+                    handler._handle(local_path, is_directory=False)
+
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0].status, "converted")
+            self.assertEqual(captured[0].original, nfd_name("서버이름.txt"))
+            self.assertTrue(os.path.exists(local_path))
+
     def test_is_duplicate_returns_true_for_repeated_path_within_window(self):
         handler = self.make_handler(lambda result: None)
         path = "/tmp/example.txt"

@@ -280,8 +280,16 @@ def _rename_dir(src: str, tmp: str, dst: str):
     macOS HFS+는 NFD↔NFC를 동일하게 취급하므로 임시 이름을 중간에 거쳐
     파일시스템이 두 이름을 별개로 인식하도록 강제한다.
     """
+    dst_name = os.path.basename(dst)
+    wait_for_drivefs = _drivefs_needs_server_rename(src, dst_name)
+
     os.rename(src, tmp)
+    if wait_for_drivefs and not _wait_for_drivefs_cloud_filename(tmp, os.path.basename(tmp)):
+        raise TimeoutError(f"Drive 서버 임시 이름 반영 시간 초과: {os.path.basename(tmp)}")
+
     os.rename(tmp, dst)
+    if wait_for_drivefs and not _wait_for_drivefs_cloud_filename(dst, dst_name):
+        raise TimeoutError(f"Drive 서버 최종 이름 반영 시간 초과: {dst_name}")
 
 
 def _rename_symlink(src: str, tmp: str, dst: str):

@@ -277,6 +277,29 @@ class GuiTests(unittest.TestCase):
 
         app.status_var.set.assert_called_once_with("일괄 변환: 25/100개 처리 중...")
 
+    def test_health_check_does_not_restart_when_watch_is_paused_for_operation(self):
+        app = object.__new__(App)
+        app._shutting_down = False
+        app._startup_scan_in_progress = False
+        app._watch_paused_for_operation = True
+        app.btn_stop = {"state": "normal"}
+        app.folder_var = Mock()
+        app.folder_var.get.return_value = "/tmp/example"
+        app._get_exclude_patterns = Mock(return_value=[])
+        app.watcher = Mock()
+        app.watcher.is_running = False
+        app._log = Mock()
+        app.status_var = Mock()
+        app._update_tray_title = Mock()
+        app._update_tray_menu_state = Mock()
+        app.after = Mock(return_value="after-id")
+
+        with patch("gui._APPKIT", False):
+            app._health_check()
+
+        app.watcher.start.assert_not_called()
+        self.assertEqual(app._health_check_after_id, "after-id")
+
     def test_button_options_keep_text_readable_in_dark_mode(self):
         app = object.__new__(App)
         app._dark = True
@@ -369,6 +392,7 @@ class GuiTests(unittest.TestCase):
         app = object.__new__(App)
         app._set_startup_scan_running = Mock()
         app._start_watch = Mock()
+        app._sync_folder_after_conversion = Mock(return_value="folder")
         app._log_result = Mock()
         app._log = Mock()
         app.status_var = Mock()
@@ -385,6 +409,22 @@ class GuiTests(unittest.TestCase):
         app.status_var.set.assert_called_once()
         self.assertIn("건너뜀", app.status_var.set.call_args.args[0])
         app._set_startup_scan_running.assert_called_once_with(False)
+        app._sync_folder_after_conversion.assert_called_once_with("folder", results)
+        app._start_watch.assert_called_once_with()
+
+    def test_startup_scan_cancelled_syncs_converted_root_before_starting_watch(self):
+        app = object.__new__(App)
+        app._set_startup_scan_running = Mock()
+        app._start_watch = Mock()
+        app._sync_folder_after_conversion = Mock(return_value="new-folder")
+        app._log_result = Mock()
+        app._log = Mock()
+        app.status_var = Mock()
+        results = [ConvertResult("new-folder", "old-folder", "new-folder", "converted")]
+
+        app._on_startup_scan_cancelled(results, "old-folder")
+
+        app._sync_folder_after_conversion.assert_called_once_with("old-folder", results)
         app._start_watch.assert_called_once_with()
 
     def test_log_area_wraps_lines_to_visible_width(self):
