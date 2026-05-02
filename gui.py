@@ -257,6 +257,7 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         self._health_check_after_id = None
         self._shutting_down = False
         self._startup_scan_in_progress = False
+        self._startup_scan_cancel_event: threading.Event | None = None
         self._autostart_path = get_autostart_executable_path()
 
         self._build_ui()
@@ -295,6 +296,29 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         except tk.TclError:
             logging.warning("macOS reopen command 등록 실패", exc_info=True)
 
+    def _button_options(self) -> dict:
+        """macOS/Tk 테마와 무관하게 버튼 텍스트가 읽히도록 색상을 고정한다."""
+        if self._dark:
+            return {
+                "fg": "#111111",
+                "bg": "#3a3a3c",
+                "activeforeground": "#111111",
+                "activebackground": "#48484a",
+                "disabledforeground": "#4a4a4a",
+            }
+        return {
+            "fg": "#111111",
+            "bg": "#f2f2f7",
+            "activeforeground": "#111111",
+            "activebackground": "#e5e5ea",
+            "disabledforeground": "#4a4a4a",
+        }
+
+    def _button(self, parent, **kwargs):
+        options = self._button_options()
+        options.update(kwargs)
+        return tk.Button(parent, **options)
+
     # ─── UI 구성 ──────────────────────────────────────────────
 
     def _build_ui(self):
@@ -320,8 +344,8 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         self.remember_var = tk.BooleanVar(value=False)
         tk.Checkbutton(right_frame, text="기억", variable=self.remember_var,
                        command=self._on_remember_toggle).pack(side="right")
-        tk.Button(right_frame, text="선택",
-                  command=self._choose_folder).pack(side="right", padx=(4, 0))
+        self._button(right_frame, text="선택",
+                     command=self._choose_folder).pack(side="right", padx=(4, 0))
 
         self.folder_var = tk.StringVar()
         tk.Entry(frame, textvariable=self.folder_var,
@@ -372,24 +396,24 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         frame = tk.Frame(self)
         frame.pack(fill="x", pady=(0, 10))
 
-        self.btn_start = tk.Button(frame, text="▶ 폴더 감시 시작",
-                                   command=self._start_watch)
+        self.btn_start = self._button(frame, text="▶ 폴더 감시 시작",
+                                      command=self._start_watch)
         self.btn_start.pack(side="left", padx=(0, 6))
 
-        self.btn_stop = tk.Button(frame, text="■ 중지", width=8,
-                                  state="disabled", command=self._stop_watch)
+        self.btn_stop = self._button(frame, text="■ 중지", width=12,
+                                     state="disabled", command=self._stop_current_activity)
         self.btn_stop.pack(side="left", padx=(0, 6))
 
-        self.btn_preview = tk.Button(frame, text="변환 미리보기",
-                                     command=self._preview_once)
+        self.btn_preview = self._button(frame, text="변환 미리보기",
+                                        command=self._preview_once)
         self.btn_preview.pack(side="left", padx=(0, 6))
 
-        self.btn_once = tk.Button(frame, text="기존 파일들 한 번에 변환",
-                                  command=self._convert_once)
+        self.btn_once = self._button(frame, text="기존 파일들 한 번에 변환",
+                                     command=self._convert_once)
         self.btn_once.pack(side="left", padx=(0, 6))
 
-        tk.Button(frame, text="로그 지우기",
-                  command=self._clear_log).pack(side="left", padx=(0, 6))
+        self._button(frame, text="로그 지우기",
+                     command=self._clear_log).pack(side="left", padx=(0, 6))
 
     def _build_status_label(self):
         self.status_var = tk.StringVar(value="폴더를 선택하세요.")
@@ -401,7 +425,7 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         colors = self._get_theme_colors()
 
         self.log = scrolledtext.ScrolledText(
-            self, width=60, height=18, state="disabled", wrap="none",
+            self, width=60, height=18, state="disabled", wrap="word",
             font=("Menlo", 11),
             bg=colors["bg"], fg=colors["fg"], insertbackground=colors["fg"],
         )
@@ -412,6 +436,8 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         self.log.tag_config("conflict",  foreground=colors["conflict"])
         self.log.tag_config("error",     foreground=colors["error"])
         self.log.tag_config("info",      foreground=colors["fg"])
+        for shortcut in ("<Command-c>", "<Command-C>", "<Control-c>", "<Control-C>"):
+            self.log.bind(shortcut, self._copy_log_selection)
 
     def _apply_window_constraints(self):
         """
@@ -555,11 +581,19 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
                 self._log(f"제외 패턴 적용 실패: {e}", "error")
 
     def _set_startup_scan_running(self, running: bool):
-        """시작 시 자동 스캔 중에는 수동 작업 버튼을 잠시 잠근다."""
+        """시작 자동 스캔 중에는 수동 작업을 잠그고 건너뛰기만 허용한다."""
         self._startup_scan_in_progress = running
         self.btn_start.config(
             state="disabled" if running or self.watcher.is_running else "normal"
         )
+        if running:
+            self.btn_stop.config(state="normal", text="스캔 건너뛰기")
+        else:
+            self._startup_scan_cancel_event = None
+            self.btn_stop.config(
+                state="normal" if self.watcher.is_running else "disabled",
+                text="■ 중지",
+            )
         self.btn_preview.config(state="disabled" if running else "normal")
         self.btn_once.config(state="disabled" if running else "normal")
 
@@ -596,6 +630,12 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         self._update_tray_title(watching=True)
         self._update_tray_menu_state(watching=True)
 
+    def _stop_current_activity(self):
+        if self._startup_scan_in_progress:
+            self._skip_startup_scan()
+        else:
+            self._stop_watch()
+
     def _stop_watch(self):
         self.watcher.stop()
         self.btn_start.config(state="normal")
@@ -609,6 +649,7 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
 
     def _start_startup_scan(self, folder: str):
         """저장된 폴더가 있으면 앱 시작 직후 누락분을 한 번 정리한다."""
+        self._startup_scan_cancel_event = threading.Event()
         self._set_startup_scan_running(True)
         self.status_var.set("시작 시 누락분 확인 중...")
         self._log(f"시작 시 누락분 스캔 시작... (제외: {self._exclude_patterns_text()})", "info")
@@ -616,21 +657,41 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         exclude_patterns = self._get_exclude_patterns()
         threading.Thread(
             target=self._run_startup_scan,
-            args=(folder, exclude_patterns),
+            args=(folder, exclude_patterns, self._startup_scan_cancel_event),
             daemon=True,
         ).start()
 
-    def _run_startup_scan(self, folder: str, exclude_patterns: list[str]):
+    def _run_startup_scan(
+        self,
+        folder: str,
+        exclude_patterns: list[str],
+        cancel_event: threading.Event,
+    ):
         """백그라운드 스레드에서 시작 시 자동 스캔을 실행한다."""
         try:
             results = convert_folder(
                 folder,
                 exclude_patterns=exclude_patterns,
                 include_root=True,
+                cancel_event=cancel_event,
+                progress_callback=self._progress_callback("시작 스캔"),
             )
-            self._cmd_queue.put(("startup_scan_done", results, folder))
+            if cancel_event.is_set():
+                self._cmd_queue.put(("startup_scan_cancelled", results, folder))
+            else:
+                self._cmd_queue.put(("startup_scan_done", results, folder))
         except Exception as e:
             self._cmd_queue.put(("startup_scan_failed", folder, str(e)))
+
+    def _skip_startup_scan(self):
+        """진행 중인 시작 자동 스캔에 안전한 중단 신호를 보낸다."""
+        if not self._startup_scan_in_progress:
+            return
+        if self._startup_scan_cancel_event is not None:
+            self._startup_scan_cancel_event.set()
+        self.status_var.set("시작 스캔을 건너뛰는 중...")
+        self.btn_stop.config(state="disabled", text="건너뛰는 중...")
+        self._log("시작 시 누락분 스캔 건너뛰기 요청", "info")
 
     def _preview_once(self):
         """폴더 전체를 스캔해 변환 예정 결과만 표시한다."""
@@ -702,6 +763,7 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
                 folder,
                 exclude_patterns=exclude_patterns,
                 include_root=True,
+                progress_callback=self._progress_callback("일괄 변환"),
             )
             self._cmd_queue.put(("batch_done", results, folder, resume_watch))
         except Exception as e:
@@ -728,6 +790,12 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
                 self._save_config()
             self._log(f"감시 폴더 경로 갱신: {new_folder}", "info")
         return new_folder
+
+    def _progress_callback(self, operation: str):
+        def callback(progress):
+            phase, current, total = progress
+            self._cmd_queue.put(("operation_progress", operation, phase, current, total))
+        return callback
 
     def _on_batch_done(self, results: list, folder: str, resume_watch: bool):
         """일괄 변환 완료 후 결과를 표시하고 필요하면 감시를 재개한다."""
@@ -808,6 +876,25 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         self._sync_folder_after_conversion(folder, results)
         self._start_watch()
 
+    def _on_startup_scan_cancelled(self, results: list, folder: str):
+        """시작 자동 스캔을 건너뛴 뒤 처리된 결과만 기록하고 감시를 시작한다."""
+        converted = [r for r in results if r.status == "converted"]
+        conflicts = [r for r in results if r.status == "conflict"]
+        errors    = [r for r in results if r.status == "error"]
+        skipped   = [r for r in results if r.status == "skipped"]
+
+        for r in results:
+            self._log_result(r)
+
+        summary = (f"시작 스캔 건너뜀 — 변환: {len(converted)}개 / "
+                   f"충돌: {len(conflicts)}개 / "
+                   f"오류: {len(errors)}개 / "
+                   f"건너뜀: {len(skipped)}개")
+        self.status_var.set(summary)
+        self._log(summary, "info")
+        self._set_startup_scan_running(False)
+        self._start_watch()
+
     def _on_startup_scan_failed(self, folder: str, error: str):
         """시작 시 자동 스캔 실패 시에도 앱은 계속 실행하고 감시는 시작한다."""
         self.status_var.set(f"시작 시 누락분 스캔 실패: {error}")
@@ -832,8 +919,12 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
     def _dispatch_command(self, cmd):
         if isinstance(cmd, tuple):
             action, *args = cmd
-            if action == "startup_scan_done":
+            if action == "operation_progress":
+                self._on_operation_progress(*args)
+            elif action == "startup_scan_done":
                 self._on_startup_scan_done(*args)
+            elif action == "startup_scan_cancelled":
+                self._on_startup_scan_cancelled(*args)
             elif action == "startup_scan_failed":
                 self._on_startup_scan_failed(*args)
             elif action == "preview_done":
@@ -849,11 +940,23 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         if cmd == "start":
             self._start_watch()
         elif cmd == "stop":
-            self._stop_watch()
+            self._stop_current_activity()
         elif cmd == "show":
             self._show_window()
         elif cmd == "quit":
             self._quit_app()
+
+    def _on_operation_progress(
+        self,
+        operation: str,
+        phase: str,
+        current: int,
+        total: int | None,
+    ):
+        if phase == "collect":
+            self.status_var.set(f"{operation}: 항목 수집 중... {current:,}개 발견")
+        elif phase == "convert" and total is not None:
+            self.status_var.set(f"{operation}: {current:,}/{total:,}개 처리 중...")
 
     def _poll_queue(self):
         """100ms마다 큐를 비워 감시 스레드의 변환 결과를 로그에 표시한다."""
@@ -916,6 +1019,16 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         self.log.config(state="normal")
         self.log.delete("1.0", "end")
         self.log.config(state="disabled")
+
+    def _copy_log_selection(self, _event=None):
+        try:
+            selected = self.log.get("sel.first", "sel.last")
+        except tk.TclError:
+            return "break"
+        if selected:
+            self.clipboard_clear()
+            self.clipboard_append(selected)
+        return "break"
 
     def _log(self, msg: str, tag: str = "info"):
         self.log.config(state="normal")
@@ -1001,6 +1114,8 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         if self._shutting_down:
             return
         self._shutting_down = True
+        if self._startup_scan_cancel_event is not None:
+            self._startup_scan_cancel_event.set()
         self.watcher.stop()
         for attr in ("_poll_after_id", "_health_check_after_id"):
             after_id = getattr(self, attr, None)

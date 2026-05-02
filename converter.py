@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import time
 import unicodedata
 import uuid
@@ -26,11 +27,38 @@ class ConvertResult:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class _DriveFSContext:
+    account_dir: str
+    root_path: str
+    root_local_stable_id: int
+
+
 _IGNORED_TEMP_NAME_RE = re.compile(r"\.sb-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+$")
 DEFAULT_EXCLUDE_PATTERNS = (
     ".git", "node_modules", "venv", ".venv", "__pycache__", 
     "build", "dist", ".idea", ".vscode"
 )
+DRIVEFS_SYNC_TIMEOUT = 60.0
+DRIVEFS_SYNC_POLL_INTERVAL = 1.0
+SCAN_YIELD_INTERVAL = 100
+PROGRESS_NOTIFY_INTERVAL = 100
+
+
+def _cancel_requested(cancel_event) -> bool:
+    """스레드 Event 같은 취소 객체가 set 상태인지 확인한다."""
+    return bool(cancel_event is not None and cancel_event.is_set())
+
+
+def _yield_for_responsiveness(processed_count: int):
+    """대량 스캔 중 GUI 메인 루프가 클릭을 처리할 시간을 짧게 양보한다."""
+    if processed_count and processed_count % SCAN_YIELD_INTERVAL == 0:
+        time.sleep(0)
+
+
+def _notify_progress(progress_callback, phase: str, current: int, total: int | None):
+    if progress_callback is not None:
+        progress_callback((phase, current, total))
 
 
 def is_nfd(name: str) -> bool:
@@ -118,6 +146,134 @@ def nfd_to_visual(name: str) -> str:
     return ''.join(chr(_JAMO_TO_COMPAT.get(ord(c), ord(c))) for c in name)
 
 
+def _drivefs_base_dir() -> str:
+    return os.path.expanduser("~/Library/Application Support/Google/DriveFS")
+
+
+def _is_relative_to(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath([os.path.abspath(path), os.path.abspath(root)]) == os.path.abspath(root)
+    except ValueError:
+        return False
+
+
+def _drivefs_contexts() -> list[_DriveFSContext]:
+    """로컬 Google Drive mirror DB에서 계정별 내 드라이브 루트를 찾는다."""
+    base_dir = _drivefs_base_dir()
+    if not os.path.isdir(base_dir):
+        return []
+
+    contexts: list[_DriveFSContext] = []
+    for account in os.listdir(base_dir):
+        account_dir = os.path.join(base_dir, account)
+        mirror_db = os.path.join(account_dir, "mirror_sqlite.db")
+        if not os.path.isfile(mirror_db):
+            continue
+        try:
+            con = sqlite3.connect(f"file:{mirror_db}?mode=ro", uri=True)
+            rows = con.execute(
+                "select local_stable_id, local_filename from mirror_item where is_root=1"
+            ).fetchall()
+            con.close()
+        except sqlite3.Error:
+            continue
+
+        for local_stable_id, local_filename in rows:
+            root_path = os.path.join(os.path.expanduser("~"), local_filename)
+            if os.path.isdir(root_path):
+                contexts.append(_DriveFSContext(account_dir, root_path, local_stable_id))
+    return contexts
+
+
+def _drivefs_context_for_path(path: str) -> _DriveFSContext | None:
+    matching = [
+        context for context in _drivefs_contexts()
+        if _is_relative_to(path, context.root_path)
+    ]
+    if not matching:
+        return None
+    return max(matching, key=lambda context: len(context.root_path))
+
+
+def _drivefs_mirror_item_for_path(path: str) -> sqlite3.Row | None:
+    context = _drivefs_context_for_path(path)
+    if context is None:
+        return None
+
+    mirror_db = os.path.join(context.account_dir, "mirror_sqlite.db")
+    try:
+        con = sqlite3.connect(f"file:{mirror_db}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        local_stable_id = context.root_local_stable_id
+        relpath = os.path.relpath(os.path.abspath(path), os.path.abspath(context.root_path))
+        if relpath == os.curdir:
+            return con.execute(
+                "select * from mirror_item where local_stable_id=?",
+                (local_stable_id,),
+            ).fetchone()
+
+        for part in relpath.split(os.sep):
+            rows = con.execute(
+                "select * from mirror_item where parent_local_stable_id=?",
+                (local_stable_id,),
+            ).fetchall()
+            normalized_part = unicodedata.normalize("NFC", part)
+            match = None
+            for row in rows:
+                local_name = row["local_filename"] or ""
+                cloud_name = row["cloud_filename"] or ""
+                if unicodedata.normalize("NFC", local_name) == normalized_part:
+                    match = row
+                    break
+                if unicodedata.normalize("NFC", cloud_name) == normalized_part:
+                    match = row
+                    break
+            if match is None:
+                return None
+            local_stable_id = match["local_stable_id"]
+        return match
+    except sqlite3.Error:
+        return None
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+def _drivefs_cloud_filename(path: str) -> str:
+    """DriveFS가 알고 있는 서버 측 파일명을 반환한다. 알 수 없으면 빈 문자열."""
+    row = _drivefs_mirror_item_for_path(path)
+    if row is None:
+        return ""
+    return row["cloud_filename"] or ""
+
+
+def _drivefs_needs_server_rename(path: str, desired_name: str) -> bool:
+    cloud_name = _drivefs_cloud_filename(path)
+    return bool(
+        cloud_name
+        and is_nfd(cloud_name)
+        and unicodedata.normalize("NFC", cloud_name) == desired_name
+    )
+
+
+def _wait_for_drivefs_cloud_filename(
+    path: str,
+    expected_name: str,
+    timeout: float | None = None,
+) -> bool:
+    """DriveFS mirror DB의 서버 파일명이 expected_name이 될 때까지 기다린다."""
+    if timeout is None:
+        timeout = DRIVEFS_SYNC_TIMEOUT
+    deadline = time.monotonic() + timeout
+    while time.monotonic() <= deadline:
+        if _drivefs_cloud_filename(path) == expected_name:
+            return True
+        time.sleep(DRIVEFS_SYNC_POLL_INTERVAL)
+    return False
+
+
 def _rename_dir(src: str, tmp: str, dst: str):
     """폴더를 NFD→NFC로 rename한다.
 
@@ -137,12 +293,21 @@ def _rename_symlink(src: str, tmp: str, dst: str):
 def _rename_file(src: str, tmp: str, dst: str):
     """파일을 NFD→NFC로 rename한다.
 
-    copy2 → 원본 삭제 → rename 순서로 처리하면 Google Drive가
-    삭제(NFD) + 생성(NFC) 이벤트로 인식해 서버에도 NFC 이름이 반영된다.
+    Google DriveFS는 NFD→NFC를 바로 처리하면 서버 title은 NFD로 남길 수 있다.
+    ASCII 임시 이름이 서버에 먼저 반영된 것을 확인한 뒤 최종 NFC로 바꿔
+    Windows에서도 완성형 파일명이 보이도록 한다.
     """
-    shutil.copy2(src, tmp)
-    os.remove(src)
+    dst_name = os.path.basename(dst)
+    wait_for_drivefs = _drivefs_needs_server_rename(src, dst_name)
+
+    os.rename(src, tmp)
+    if wait_for_drivefs and not _wait_for_drivefs_cloud_filename(tmp, os.path.basename(tmp)):
+        raise TimeoutError(f"Drive 서버 임시 이름 반영 시간 초과: {os.path.basename(tmp)}")
+
     os.rename(tmp, dst)
+    os.utime(dst, None)
+    if wait_for_drivefs and not _wait_for_drivefs_cloud_filename(dst, dst_name):
+        raise TimeoutError(f"Drive 서버 최종 이름 반영 시간 초과: {dst_name}")
 
 
 def _path_exists(path: str) -> bool:
@@ -174,6 +339,12 @@ def _find_conflicting_entry(filepath: str, converted_name: str) -> str:
     try:
         with os.scandir(dirpath) as entries:
             for entry in entries:
+                try:
+                    if os.path.samefile(entry.path, filepath):
+                        continue
+                except OSError:
+                    if entry.name == original_name:
+                        continue
                 if entry.name == original_name:
                     continue
                 if unicodedata.normalize('NFC', entry.name) == converted_name:
@@ -187,22 +358,27 @@ def plan_file(filepath: str) -> ConvertResult:
     """파일/폴더 1개의 변환 계획만 계산한다. 실제 파일 변경은 하지 않는다."""
     dirpath = os.path.dirname(filepath)
     name = os.path.basename(filepath)
+    cloud_name = _drivefs_cloud_filename(filepath)
 
-    if should_ignore_name(name) or not is_nfd(name):
+    if should_ignore_name(name):
         return ConvertResult(filepath, name, name, "skipped")
 
-    nfc_name = unicodedata.normalize('NFC', name)
+    original_name = cloud_name if is_nfd(cloud_name) else name
+    if not is_nfd(original_name):
+        return ConvertResult(filepath, name, name, "skipped")
+
+    nfc_name = unicodedata.normalize('NFC', original_name)
     new_path = os.path.join(dirpath, nfc_name)
     conflict_name = _find_conflicting_entry(filepath, nfc_name)
     if conflict_name:
         return ConvertResult(
             filepath,
-            name,
+            original_name,
             nfc_name,
             "conflict",
             f"{conflict_name} 이미 존재",
         )
-    return ConvertResult(new_path, name, nfc_name, "preview")
+    return ConvertResult(new_path, original_name, nfc_name, "preview")
 
 
 def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> ConvertResult:
@@ -248,22 +424,36 @@ def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> 
             except Exception:
                 pass
             logging.error(f"Error converting {filepath}: {e}")
-            return ConvertResult(filepath, name, nfc_name, "error", str(e))
+            result_path = new_path if _path_exists(new_path) else filepath
+            return ConvertResult(result_path, name, nfc_name, "error", str(e))
 
     msg = f"{retry}회 재시도 후 실패"
     logging.error(f"Failed to convert {filepath}: {msg}")
     return ConvertResult(filepath, name, nfc_name, "error", msg)
 
 
-def _collect_entries(folder: str, exclude_patterns=None, include_root: bool = False) -> list[str]:
+def _collect_entries(
+    folder: str,
+    exclude_patterns=None,
+    include_root: bool = False,
+    cancel_event=None,
+    progress_callback=None,
+) -> list[str]:
     """제외 패턴을 적용해 변환 후보 경로를 수집한다."""
     exclude_patterns = clean_exclude_patterns(exclude_patterns)
+    if _cancel_requested(cancel_event):
+        _notify_progress(progress_callback, "collect", 0, None)
+        return []
     if should_exclude_path(folder, exclude_patterns, is_directory=True):
         logging.info(f"Skipped excluded folder: {folder}")
+        _notify_progress(progress_callback, "collect", 0, None)
         return []
 
     all_entries = []
+    processed_count = 0
     for root, dirs, files in os.walk(folder):
+        if _cancel_requested(cancel_event):
+            break
         # 제외 디렉터리는 하위 탐색 자체를 막아 이벤트/변환 비용을 줄인다.
         dirs[:] = [
             name for name in dirs
@@ -272,18 +462,33 @@ def _collect_entries(folder: str, exclude_patterns=None, include_root: bool = Fa
             )
         ]
         for name in files:
+            if _cancel_requested(cancel_event):
+                break
+            processed_count += 1
+            _yield_for_responsiveness(processed_count)
             path = os.path.join(root, name)
             if should_exclude_path(path, exclude_patterns, is_directory=False):
                 continue
             all_entries.append(path)
+            if processed_count % PROGRESS_NOTIFY_INTERVAL == 0:
+                _notify_progress(progress_callback, "collect", len(all_entries), None)
+        if _cancel_requested(cancel_event):
+            break
         for name in dirs:
+            if _cancel_requested(cancel_event):
+                break
+            processed_count += 1
+            _yield_for_responsiveness(processed_count)
             all_entries.append(os.path.join(root, name))
+            if processed_count % PROGRESS_NOTIFY_INTERVAL == 0:
+                _notify_progress(progress_callback, "collect", len(all_entries), None)
 
     if include_root:
         all_entries.append(folder)
 
     # 깊은 경로(구분자 수가 많은 것)를 먼저 처리
     all_entries.sort(key=lambda p: p.count(os.sep), reverse=True)
+    _notify_progress(progress_callback, "collect", len(all_entries), None)
     return all_entries
 
 
@@ -307,21 +512,45 @@ def convert_folder(
     folder: str,
     exclude_patterns=None,
     include_root: bool = False,
+    cancel_event=None,
+    progress_callback=None,
 ) -> list[ConvertResult]:
     """폴더 하위의 모든 파일/폴더명을 NFD → NFC로 변환한다.
 
     깊은 경로부터 처리해 상위 폴더 rename 시 하위 경로가 무효화되는 것을 방지한다.
     """
-    all_entries = _collect_entries(folder, exclude_patterns, include_root=include_root)
+    all_entries = _collect_entries(
+        folder,
+        exclude_patterns,
+        include_root=include_root,
+        cancel_event=cancel_event,
+        progress_callback=progress_callback,
+    )
+    total = len(all_entries)
+    _notify_progress(progress_callback, "convert", 0, total)
 
     results = []
-    for entry in all_entries:
+    processed_count = 0
+    for index, entry in enumerate(all_entries, start=1):
+        _yield_for_responsiveness(index)
+        if _cancel_requested(cancel_event):
+            break
+        processed_count = index
         if not _path_exists(entry):
+            if index % PROGRESS_NOTIFY_INTERVAL == 0:
+                _notify_progress(progress_callback, "convert", index, total)
             continue
         if should_ignore_name(os.path.basename(entry)):
+            if index % PROGRESS_NOTIFY_INTERVAL == 0:
+                _notify_progress(progress_callback, "convert", index, total)
             continue
         if should_exclude_path(entry, exclude_patterns):
+            if index % PROGRESS_NOTIFY_INTERVAL == 0:
+                _notify_progress(progress_callback, "convert", index, total)
             continue
         results.append(convert_file(entry))
+        if index % PROGRESS_NOTIFY_INTERVAL == 0:
+            _notify_progress(progress_callback, "convert", index, total)
 
+    _notify_progress(progress_callback, "convert", processed_count, total)
     return results

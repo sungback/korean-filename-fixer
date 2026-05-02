@@ -1,12 +1,14 @@
 import os
 import sys
 import tempfile
+import threading
 import unicodedata
 import unittest
 from unittest.mock import patch
 
 from converter import (
     clean_exclude_patterns,
+    ConvertResult,
     convert_file,
     convert_folder,
     is_nfd,
@@ -54,6 +56,19 @@ class ConverterTests(unittest.TestCase):
             with open(expected_path, encoding="utf-8") as f:
                 self.assertEqual(f.read(), "content")
 
+    def test_convert_file_updates_mtime_to_force_drive_sync(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_path = os.path.join(tmp, nfd_name("동기화.txt"))
+            with open(original_path, "w", encoding="utf-8") as f:
+                f.write("content")
+            old_timestamp = 946684800.0
+            os.utime(original_path, (old_timestamp, old_timestamp))
+
+            result = convert_file(original_path)
+
+            self.assertEqual(result.status, "converted")
+            self.assertGreater(os.stat(result.path).st_mtime, old_timestamp + 3600)
+
     def test_convert_folder_skips_excluded_directories(self):
         with tempfile.TemporaryDirectory() as tmp:
             keep_dir = os.path.join(tmp, "keep")
@@ -79,6 +94,73 @@ class ConverterTests(unittest.TestCase):
             excluded_names = [entry.name for entry in os.scandir(excluded_dir)]
             self.assertTrue(any(is_nfd(name) for name in excluded_names))
 
+    def test_convert_folder_stops_after_cancel_event_is_set(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for index in range(3):
+                path = os.path.join(tmp, f"file-{index}.txt")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("content")
+                paths.append(path)
+
+            cancel_event = threading.Event()
+
+            def convert_and_cancel(path):
+                cancel_event.set()
+                return ConvertResult(path, os.path.basename(path), os.path.basename(path), "skipped")
+
+            with patch("converter.convert_file", side_effect=convert_and_cancel) as convert:
+                results = convert_folder(tmp, cancel_event=cancel_event)
+
+            self.assertEqual(len(results), 1)
+            convert.assert_called_once()
+
+    def test_convert_folder_skips_walk_when_cancelled_before_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, nfd_name("취소.txt"))
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("content")
+            cancel_event = threading.Event()
+            cancel_event.set()
+
+            results = convert_folder(tmp, cancel_event=cancel_event)
+
+            self.assertEqual(results, [])
+
+    def test_convert_folder_yields_periodically_during_large_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for index in range(205):
+                path = os.path.join(tmp, f"file-{index}.txt")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("content")
+
+            def skip(path):
+                return ConvertResult(path, os.path.basename(path), os.path.basename(path), "skipped")
+
+            with patch("converter.convert_file", side_effect=skip):
+                with patch("converter.time.sleep") as sleep:
+                    convert_folder(tmp)
+
+            self.assertTrue(any(call.args == (0,) for call in sleep.call_args_list))
+
+    def test_convert_folder_reports_collection_and_processing_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for index in range(3):
+                path = os.path.join(tmp, f"file-{index}.txt")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("content")
+            progress_events = []
+
+            def skip(path):
+                return ConvertResult(path, os.path.basename(path), os.path.basename(path), "skipped")
+
+            with patch("converter.convert_file", side_effect=skip):
+                convert_folder(tmp, progress_callback=progress_events.append)
+
+            self.assertIn(("collect", 3, None), progress_events)
+            self.assertIn(("convert", 0, 3), progress_events)
+            self.assertIn(("convert", 3, 3), progress_events)
+
     def test_plan_file_returns_preview_for_convertible_nfd_name(self):
         with tempfile.TemporaryDirectory() as tmp:
             original_path = os.path.join(tmp, nfd_name("미리보기.txt"))
@@ -90,6 +172,54 @@ class ConverterTests(unittest.TestCase):
             self.assertEqual(result.status, "preview")
             self.assertEqual(result.converted, "미리보기.txt")
             self.assertTrue(os.path.exists(original_path))
+
+    def test_plan_file_previews_drivefs_cloud_nfd_when_local_name_is_nfc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local_path = os.path.join(tmp, "서버이름.txt")
+            with open(local_path, "w", encoding="utf-8") as f:
+                f.write("content")
+
+            with patch("converter._drivefs_cloud_filename", return_value=nfd_name("서버이름.txt"), create=True):
+                result = plan_file(local_path)
+
+            self.assertEqual(result.status, "preview")
+            self.assertEqual(result.original, nfd_name("서버이름.txt"))
+            self.assertEqual(result.converted, "서버이름.txt")
+            self.assertEqual(result.path, local_path)
+
+    def test_convert_file_waits_for_drivefs_stage_before_final_rename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local_path = os.path.join(tmp, "서버반영.txt")
+            with open(local_path, "w", encoding="utf-8") as f:
+                f.write("content")
+            original_cloud_name = nfd_name("서버반영.txt")
+            expected_path = local_path
+
+            real_rename = os.rename
+            rename_calls = []
+
+            def record_rename(src, dst):
+                rename_calls.append((os.path.basename(src), os.path.basename(dst)))
+                return real_rename(src, dst)
+
+            def wait_for_cloud_name(path, expected_name, timeout=None):
+                if expected_name.startswith("__nfc_tmp_"):
+                    self.assertTrue(os.path.exists(path))
+                    self.assertFalse(os.path.exists(expected_path))
+                else:
+                    self.assertEqual(expected_name, "서버반영.txt")
+                    self.assertTrue(os.path.exists(expected_path))
+                return True
+
+            with patch("converter._drivefs_cloud_filename", return_value=original_cloud_name, create=True):
+                with patch("converter._wait_for_drivefs_cloud_filename", side_effect=wait_for_cloud_name, create=True) as wait:
+                    with patch("converter.os.rename", side_effect=record_rename):
+                        result = convert_file(local_path)
+
+            self.assertEqual(result.status, "converted")
+            self.assertEqual(result.path, expected_path)
+            self.assertEqual(len(rename_calls), 2)
+            self.assertEqual(wait.call_count, 2)
 
     def test_plan_file_reports_conflict_when_target_name_exists(self):
         with tempfile.TemporaryDirectory() as tmp:

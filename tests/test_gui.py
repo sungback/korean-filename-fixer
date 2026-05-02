@@ -1,9 +1,11 @@
 import os
 import queue
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
+from converter import ConvertResult
 from gui import App, should_run_startup_scan, startup_scan_skip_reason
 
 
@@ -76,9 +78,10 @@ class GuiTests(unittest.TestCase):
     def test_run_startup_scan_queues_completion_without_calling_tk_from_worker(self):
         app = self.make_worker_app()
         results = [object()]
+        cancel_event = threading.Event()
 
         with patch("gui.convert_folder", return_value=results):
-            app._run_startup_scan("folder", ["node_modules"])
+            app._run_startup_scan("folder", ["node_modules"], cancel_event)
 
         self.assertEqual(
             app._cmd_queue.get_nowait(),
@@ -86,11 +89,56 @@ class GuiTests(unittest.TestCase):
         )
         app.after.assert_not_called()
 
+    def test_run_startup_scan_queues_progress_without_calling_tk_from_worker(self):
+        app = self.make_worker_app()
+        cancel_event = threading.Event()
+
+        def convert_with_progress(*_args, progress_callback=None, **_kwargs):
+            progress_callback(("collect", 1200, None))
+            progress_callback(("convert", 300, 1200))
+            return []
+
+        with patch("gui.convert_folder", side_effect=convert_with_progress):
+            app._run_startup_scan("folder", ["node_modules"], cancel_event)
+
+        self.assertEqual(
+            app._cmd_queue.get_nowait(),
+            ("operation_progress", "시작 스캔", "collect", 1200, None),
+        )
+        self.assertEqual(
+            app._cmd_queue.get_nowait(),
+            ("operation_progress", "시작 스캔", "convert", 300, 1200),
+        )
+        self.assertEqual(
+            app._cmd_queue.get_nowait(),
+            ("startup_scan_done", [], "folder"),
+        )
+        app.after.assert_not_called()
+
+    def test_run_startup_scan_queues_cancelled_when_event_is_set(self):
+        app = self.make_worker_app()
+        results = [object()]
+        cancel_event = threading.Event()
+
+        def convert_and_cancel(*_args, **_kwargs):
+            cancel_event.set()
+            return results
+
+        with patch("gui.convert_folder", side_effect=convert_and_cancel):
+            app._run_startup_scan("folder", ["node_modules"], cancel_event)
+
+        self.assertEqual(
+            app._cmd_queue.get_nowait(),
+            ("startup_scan_cancelled", results, "folder"),
+        )
+        app.after.assert_not_called()
+
     def test_run_startup_scan_queues_failure_without_calling_tk_from_worker(self):
         app = self.make_worker_app()
+        cancel_event = threading.Event()
 
         with patch("gui.convert_folder", side_effect=RuntimeError("boom")):
-            app._run_startup_scan("folder", ["node_modules"])
+            app._run_startup_scan("folder", ["node_modules"], cancel_event)
 
         self.assertEqual(
             app._cmd_queue.get_nowait(),
@@ -108,6 +156,31 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(
             app._cmd_queue.get_nowait(),
             ("batch_done", results, "folder", True),
+        )
+        app.after.assert_not_called()
+
+    def test_run_batch_convert_queues_progress_without_calling_tk_from_worker(self):
+        app = self.make_worker_app()
+
+        def convert_with_progress(*_args, progress_callback=None, **_kwargs):
+            progress_callback(("collect", 500, None))
+            progress_callback(("convert", 10, 500))
+            return []
+
+        with patch("gui.convert_folder", side_effect=convert_with_progress):
+            app._run_batch_convert("folder", False, ["node_modules"])
+
+        self.assertEqual(
+            app._cmd_queue.get_nowait(),
+            ("operation_progress", "일괄 변환", "collect", 500, None),
+        )
+        self.assertEqual(
+            app._cmd_queue.get_nowait(),
+            ("operation_progress", "일괄 변환", "convert", 10, 500),
+        )
+        self.assertEqual(
+            app._cmd_queue.get_nowait(),
+            ("batch_done", [], "folder", False),
         )
         app.after.assert_not_called()
 
@@ -139,6 +212,199 @@ class GuiTests(unittest.TestCase):
 
         app._on_preview_done.assert_called_once_with(results, "folder", True)
         self.assertEqual(app._poll_after_id, "after-id")
+
+    def test_poll_queue_dispatches_progress_commands(self):
+        app = object.__new__(App)
+        app._queue = queue.Queue()
+        app._cmd_queue = queue.Queue()
+        app._poll_after_id = None
+        app._shutting_down = False
+        app.after = Mock(return_value="after-id")
+        app._log_result = Mock()
+        app._on_operation_progress = Mock()
+        app._cmd_queue.put(("operation_progress", "시작 스캔", "convert", 25, 100))
+
+        app._poll_queue()
+
+        app._on_operation_progress.assert_called_once_with("시작 스캔", "convert", 25, 100)
+        self.assertEqual(app._poll_after_id, "after-id")
+
+    def test_operation_progress_updates_status_for_collection(self):
+        app = object.__new__(App)
+        app.status_var = Mock()
+
+        app._on_operation_progress("시작 스캔", "collect", 1234, None)
+
+        app.status_var.set.assert_called_once_with("시작 스캔: 항목 수집 중... 1,234개 발견")
+
+    def test_operation_progress_updates_status_for_conversion(self):
+        app = object.__new__(App)
+        app.status_var = Mock()
+
+        app._on_operation_progress("일괄 변환", "convert", 25, 100)
+
+        app.status_var.set.assert_called_once_with("일괄 변환: 25/100개 처리 중...")
+
+    def test_button_options_keep_text_readable_in_dark_mode(self):
+        app = object.__new__(App)
+        app._dark = True
+
+        options = app._button_options()
+
+        self.assertNotEqual(options["fg"], options["bg"])
+        self.assertNotEqual(options["activeforeground"], options["activebackground"])
+        self.assertNotEqual(options["disabledforeground"], options["bg"])
+        self.assertEqual(options["fg"], "#111111")
+        self.assertEqual(options["activeforeground"], "#111111")
+        self.assertEqual(options["disabledforeground"], "#4a4a4a")
+
+    def test_button_helper_applies_readable_options_to_tk_buttons(self):
+        app = object.__new__(App)
+        app._button_options = Mock(return_value={
+            "fg": "#111111",
+            "bg": "#f2f2f7",
+            "activeforeground": "#111111",
+            "activebackground": "#e5e5ea",
+            "disabledforeground": "#8e8e93",
+        })
+        parent = Mock()
+        button = Mock()
+
+        with patch("gui.tk.Button", return_value=button) as tk_button:
+            result = app._button(parent, text="변환", command="callback")
+
+        self.assertEqual(result, button)
+        tk_button.assert_called_once_with(
+            parent,
+            fg="#111111",
+            bg="#f2f2f7",
+            activeforeground="#111111",
+            activebackground="#e5e5ea",
+            disabledforeground="#8e8e93",
+            text="변환",
+            command="callback",
+        )
+
+    def test_startup_scan_running_turns_stop_button_into_skip_button(self):
+        app = object.__new__(App)
+        app._startup_scan_cancel_event = None
+        app.watcher = Mock(is_running=False)
+        app.btn_start = Mock()
+        app.btn_stop = Mock()
+        app.btn_preview = Mock()
+        app.btn_once = Mock()
+
+        app._set_startup_scan_running(True)
+
+        app.btn_start.config.assert_called_once_with(state="disabled")
+        app.btn_stop.config.assert_called_once_with(state="normal", text="스캔 건너뛰기")
+        app.btn_preview.config.assert_called_once_with(state="disabled")
+        app.btn_once.config.assert_called_once_with(state="disabled")
+
+    def test_startup_scan_running_false_restores_stop_button_for_watcher_state(self):
+        app = object.__new__(App)
+        app._startup_scan_cancel_event = threading.Event()
+        app.watcher = Mock(is_running=False)
+        app.btn_start = Mock()
+        app.btn_stop = Mock()
+        app.btn_preview = Mock()
+        app.btn_once = Mock()
+
+        app._set_startup_scan_running(False)
+
+        app.btn_start.config.assert_called_once_with(state="normal")
+        app.btn_stop.config.assert_called_once_with(state="disabled", text="■ 중지")
+        app.btn_preview.config.assert_called_once_with(state="normal")
+        app.btn_once.config.assert_called_once_with(state="normal")
+        self.assertIsNone(app._startup_scan_cancel_event)
+
+    def test_skip_startup_scan_sets_cancel_event_and_updates_ui(self):
+        app = object.__new__(App)
+        app._startup_scan_in_progress = True
+        app._startup_scan_cancel_event = threading.Event()
+        app.status_var = Mock()
+        app.btn_stop = Mock()
+        app._log = Mock()
+
+        app._skip_startup_scan()
+
+        self.assertTrue(app._startup_scan_cancel_event.is_set())
+        app.status_var.set.assert_called_once_with("시작 스캔을 건너뛰는 중...")
+        app.btn_stop.config.assert_called_once_with(state="disabled", text="건너뛰는 중...")
+        app._log.assert_called_once_with("시작 시 누락분 스캔 건너뛰기 요청", "info")
+
+    def test_startup_scan_cancelled_logs_partial_results_and_starts_watch(self):
+        app = object.__new__(App)
+        app._set_startup_scan_running = Mock()
+        app._start_watch = Mock()
+        app._log_result = Mock()
+        app._log = Mock()
+        app.status_var = Mock()
+        results = [
+            ConvertResult("a", "a", "a", "converted"),
+            ConvertResult("b", "b", "b", "skipped"),
+        ]
+
+        app._on_startup_scan_cancelled(results, "folder")
+
+        self.assertEqual(app._log_result.call_count, 2)
+        app._log_result.assert_any_call(results[0])
+        app._log_result.assert_any_call(results[1])
+        app.status_var.set.assert_called_once()
+        self.assertIn("건너뜀", app.status_var.set.call_args.args[0])
+        app._set_startup_scan_running.assert_called_once_with(False)
+        app._start_watch.assert_called_once_with()
+
+    def test_log_area_wraps_lines_to_visible_width(self):
+        app = object.__new__(App)
+        app._get_theme_colors = Mock(return_value={
+            "bg": "#ffffff",
+            "fg": "#333333",
+            "converted": "#007700",
+            "preview": "#005fcc",
+            "conflict": "#b35a00",
+            "error": "#cc0000",
+        })
+        log_widget = Mock()
+
+        with patch("gui.scrolledtext.ScrolledText", return_value=log_widget) as scrolled_text:
+            app._build_log_area()
+
+        scrolled_text.assert_called_once()
+        self.assertEqual(scrolled_text.call_args.kwargs["wrap"], "word")
+        log_widget.pack.assert_called_once_with(fill="both", expand=True)
+
+    def test_log_area_binds_copy_shortcuts_for_disabled_log_widget(self):
+        app = object.__new__(App)
+        app._get_theme_colors = Mock(return_value={
+            "bg": "#ffffff",
+            "fg": "#333333",
+            "converted": "#007700",
+            "preview": "#005fcc",
+            "conflict": "#b35a00",
+            "error": "#cc0000",
+        })
+        log_widget = Mock()
+
+        with patch("gui.scrolledtext.ScrolledText", return_value=log_widget):
+            app._build_log_area()
+
+        log_widget.bind.assert_any_call("<Command-c>", app._copy_log_selection)
+        log_widget.bind.assert_any_call("<Control-c>", app._copy_log_selection)
+
+    def test_copy_log_selection_copies_selected_text_to_clipboard(self):
+        app = object.__new__(App)
+        app.log = Mock()
+        app.log.get.return_value = "선택한 로그"
+        app.clipboard_clear = Mock()
+        app.clipboard_append = Mock()
+
+        result = app._copy_log_selection(None)
+
+        app.log.get.assert_called_once_with("sel.first", "sel.last")
+        app.clipboard_clear.assert_called_once_with()
+        app.clipboard_append.assert_called_once_with("선택한 로그")
+        self.assertEqual(result, "break")
 
 
 if __name__ == "__main__":
