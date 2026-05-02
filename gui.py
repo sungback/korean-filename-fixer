@@ -486,10 +486,10 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
                     self._start_startup_scan(folder)
                 else:
                     if skip_reason:
-                        self.status_var.set("시작 시 자동 스캔 건너뜀 — 감시만 시작합니다.")
+                        self.status_var.set("시작 시 자동 스캔 건너뜀 — 감시는 정상적으로 시작합니다.")
                         self._log(
                             f"시작 시 자동 스캔 건너뜀: {skip_reason} "
-                            "필요하면 미리보기 후 수동 변환을 실행하세요.",
+                            "감시는 정상적으로 시작합니다. 필요하면 미리보기 후 수동 변환을 실행하세요.",
                             "info",
                         )
                     self._start_watch()

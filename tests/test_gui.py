@@ -50,6 +50,37 @@ class GuiTests(unittest.TestCase):
                 self.assertFalse(should_run_startup_scan(tmp, True))
                 self.assertIn("항목", startup_scan_skip_reason(tmp, True))
 
+    def test_load_config_starts_watch_when_startup_scan_is_skipped(self):
+        app = object.__new__(App)
+        app.exclude_var = Mock()
+        app.scan_on_startup_var = Mock()
+        app.scan_on_startup_var.get.return_value = True
+        app.remember_var = Mock()
+        app.folder_var = Mock()
+        app.status_var = Mock()
+        app._format_exclude_patterns = Mock(return_value=".git")
+        app._sync_autostart_state = Mock()
+        app._start_startup_scan = Mock()
+        app._start_watch = Mock()
+        app._log = Mock()
+
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as config:
+            config.write('{"folder": "/Users/back/내 드라이브"}')
+            config.flush()
+
+            with patch("gui.CONFIG_PATH", config.name):
+                with patch("gui.os.path.isdir", return_value=True):
+                    with patch(
+                        "gui.startup_scan_skip_reason",
+                        return_value="동기화 루트는 시작 자동 스캔만 건너뜁니다.",
+                    ):
+                        app._load_config()
+
+        app.folder_var.set.assert_called_once_with("/Users/back/내 드라이브")
+        app._start_startup_scan.assert_not_called()
+        app._start_watch.assert_called_once_with()
+        app.status_var.set.assert_any_call("시작 시 자동 스캔 건너뜀 — 감시는 정상적으로 시작합니다.")
+
     def test_run_preview_queues_completion_without_calling_tk_from_worker(self):
         app = self.make_worker_app()
         results = [object()]
