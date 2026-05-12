@@ -30,7 +30,7 @@ bash build.sh
 
 ## 핵심 설계 결정
 - **NFD 변환 전략**: 단순 `os.rename(NFD→NFC)` 은 macOS HFS+가 동일하게 취급해 Google Drive가 감지 못함
-  - 파일: `copy2 → 삭제 → rename` (Drive가 삭제+생성으로 인식)
+  - 파일: `rename(NFD→tmp) → DriveFS 동기화 대기 → rename(tmp→NFC)` (임시 이름 경유 2단계 rename)
   - 폴더: 임시 이름 경유 2단계 rename
 - **미리보기(드라이런)**: 실제 변환 전에 예정 이름과 충돌 여부를 계산해 로그로 확인 가능
 - **시작 시 자동 스캔**: 저장된 감시 폴더가 있으면 앱 시작 직후 누락된 NFD 파일을 한 번 정리한 뒤 감시 시작
