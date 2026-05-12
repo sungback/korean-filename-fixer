@@ -226,6 +226,22 @@ class ConverterTests(unittest.TestCase):
             self.assertEqual(len(rename_calls), 2)
             self.assertEqual(wait.call_count, 2)
 
+    def test_convert_file_rolls_back_when_drivefs_tmp_wait_times_out(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local_path = os.path.join(tmp, "서버지연.txt")
+            with open(local_path, "w", encoding="utf-8") as f:
+                f.write("content")
+            original_cloud_name = nfd_name("서버지연.txt")
+
+            with patch("converter._drivefs_cloud_filename", return_value=original_cloud_name, create=True):
+                with patch("converter._wait_for_drivefs_cloud_filename", return_value=False, create=True):
+                    result = convert_file(local_path, retry=1, retry_interval=0)
+
+            self.assertEqual(result.status, "error")
+            self.assertTrue(os.path.exists(local_path))
+            self.assertEqual(os.listdir(tmp), ["서버지연.txt"])
+            self.assertFalse(any(name.startswith("__nfc_tmp_") for name in os.listdir(tmp)))
+
     def test_convert_directory_waits_for_drivefs_stage_before_final_rename(self):
         with tempfile.TemporaryDirectory() as tmp:
             local_path = os.path.join(tmp, "서버폴더")
@@ -448,6 +464,26 @@ class ScanPolicyTests(unittest.TestCase):
             with patch("converter.STARTUP_SCAN_ENTRY_LIMIT", 2):
                 self.assertFalse(should_run_startup_scan(tmp, True))
                 self.assertIn("항목", startup_scan_skip_reason(tmp, True))
+
+    def test_startup_scan_entry_limit_ignores_excluded_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            excluded = os.path.join(tmp, "node_modules")
+            os.makedirs(excluded)
+            for index in range(3):
+                open(os.path.join(excluded, f"file-{index}.txt"), "w").close()
+
+            with patch("converter.STARTUP_SCAN_ENTRY_LIMIT", 2):
+                self.assertTrue(
+                    should_run_startup_scan(tmp, True, exclude_patterns=["node_modules"])
+                )
+                self.assertEqual(
+                    startup_scan_skip_reason(
+                        tmp,
+                        True,
+                        exclude_patterns=["node_modules"],
+                    ),
+                    "",
+                )
 
 
 class FolderAfterResultsTests(unittest.TestCase):

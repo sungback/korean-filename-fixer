@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 import time
 import unicodedata
 import unittest
@@ -173,6 +174,44 @@ class WatcherTests(unittest.TestCase):
             handler.close()
 
             self.assertEqual(captured, [])
+            self.assertFalse(handler._worker.is_alive())
+
+    def test_close_sets_stop_event_passed_to_active_conversion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            captured_stop_events = []
+            started = threading.Event()
+            handler = NFDHandler(
+                lambda result: None,
+                settle_delay=0,
+                wait_for_stable=False,
+            )
+            self.addCleanup(handler.close)
+
+            original_path = os.path.join(tmp, nfd_name("중단.txt"))
+            with open(original_path, "w", encoding="utf-8") as f:
+                f.write("content")
+
+            def convert(path, stop_event=None):
+                captured_stop_events.append(stop_event)
+                started.set()
+                deadline = time.monotonic() + 1.0
+                while not stop_event.is_set() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                return ConvertResult(
+                    path,
+                    os.path.basename(path),
+                    "중단.txt",
+                    "error",
+                    "cancelled",
+                )
+
+            with patch("watcher.convert_file", side_effect=convert):
+                handler._handle(original_path, is_directory=False)
+                self.assertTrue(started.wait(1.0))
+                handler.close()
+
+            self.assertEqual(len(captured_stop_events), 1)
+            self.assertTrue(captured_stop_events[0].is_set())
             self.assertFalse(handler._worker.is_alive())
 
 
