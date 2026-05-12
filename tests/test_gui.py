@@ -445,5 +445,94 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(result, "break")
 
 
+class CallbackTests(unittest.TestCase):
+    def _make_app(self, extra_attrs=None):
+        app = object.__new__(App)
+        app._log_result = Mock()
+        app._log = Mock()
+        app._resume_watch = Mock()
+        app._sync_folder_after_conversion = Mock(side_effect=lambda f, r: f)
+        app.status_var = Mock()
+        if extra_attrs:
+            for k, v in extra_attrs.items():
+                setattr(app, k, v)
+        return app
+
+    def test_on_batch_done_logs_results_sets_status_and_enables_button(self):
+        app = self._make_app({"btn_once": Mock()})
+        results = [
+            ConvertResult("a", "a", "a", "converted"),
+            ConvertResult("b", "b", "b", "conflict"),
+        ]
+
+        app._on_batch_done(results, "/tmp/folder", resume_watch=False)
+
+        self.assertEqual(app._log_result.call_count, 2)
+        app.btn_once.config.assert_called_with(state="normal")
+        status = app.status_var.set.call_args.args[0]
+        self.assertIn("완료", status)
+        self.assertIn("1", status)  # 변환 1개
+
+    def test_on_batch_done_resumes_watch_when_flag_set(self):
+        app = self._make_app({"btn_once": Mock()})
+        app._on_batch_done([], "/tmp/folder", resume_watch=True)
+        app._resume_watch.assert_called_once_with("/tmp/folder")
+
+    def test_on_batch_done_clears_paused_flag_when_no_resume(self):
+        app = self._make_app({"btn_once": Mock()})
+        app._watch_paused_for_operation = True
+        app._on_batch_done([], "/tmp/folder", resume_watch=False)
+        app._resume_watch.assert_not_called()
+        self.assertFalse(app._watch_paused_for_operation)
+
+    def test_on_batch_failed_sets_error_status_and_enables_button(self):
+        app = self._make_app({"btn_once": Mock()})
+        app._on_batch_failed("/tmp/folder", resume_watch=False, error="디스크 오류")
+        status = app.status_var.set.call_args.args[0]
+        self.assertIn("디스크 오류", status)
+        app.btn_once.config.assert_called_with(state="normal")
+
+    def test_on_preview_done_logs_results_sets_status_and_enables_button(self):
+        app = self._make_app({"btn_preview": Mock()})
+        results = [
+            ConvertResult("a", "a", "a", "preview"),
+            ConvertResult("b", "b", "b", "skipped"),
+        ]
+
+        app._on_preview_done(results, "/tmp/folder", resume_watch=False)
+
+        self.assertEqual(app._log_result.call_count, 2)
+        app.btn_preview.config.assert_called_with(state="normal")
+        status = app.status_var.set.call_args.args[0]
+        self.assertIn("미리보기 완료", status)
+
+    def test_on_preview_done_resumes_watch_when_flag_set(self):
+        app = self._make_app({"btn_preview": Mock()})
+        app._on_preview_done([], "/tmp/folder", resume_watch=True)
+        app._resume_watch.assert_called_once_with("/tmp/folder")
+
+    def test_on_preview_failed_sets_error_status_and_enables_button(self):
+        app = self._make_app({"btn_preview": Mock()})
+        app._on_preview_failed("/tmp/folder", resume_watch=False, error="권한 없음")
+        status = app.status_var.set.call_args.args[0]
+        self.assertIn("권한 없음", status)
+        app.btn_preview.config.assert_called_with(state="normal")
+
+    def test_on_startup_scan_done_logs_results_stops_scan_and_starts_watch(self):
+        app = self._make_app()
+        app._set_startup_scan_running = Mock()
+        app._start_watch = Mock()
+        results = [ConvertResult("a", "a", "a", "converted")]
+
+        app._on_startup_scan_done(results, "/tmp/folder")
+
+        self.assertEqual(app._log_result.call_count, 1)
+        app._set_startup_scan_running.assert_called_once_with(False)
+        app._sync_folder_after_conversion.assert_called_once_with("/tmp/folder", results)
+        app._start_watch.assert_called_once_with()
+        status = app.status_var.set.call_args.args[0]
+        self.assertIn("완료", status)
+
+
 if __name__ == "__main__":
     unittest.main()
