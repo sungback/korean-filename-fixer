@@ -5,8 +5,12 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from converter import ConvertResult
-from gui import App, should_run_startup_scan, startup_scan_skip_reason
+from converter import (
+    ConvertResult,
+    should_run_startup_scan,
+    startup_scan_skip_reason,
+)
+from gui import App
 
 
 class GuiTests(unittest.TestCase):
@@ -46,7 +50,7 @@ class GuiTests(unittest.TestCase):
             for index in range(3):
                 open(os.path.join(tmp, f"file-{index}.txt"), "w").close()
 
-            with patch("gui.STARTUP_SCAN_ENTRY_LIMIT", 2):
+            with patch("converter.STARTUP_SCAN_ENTRY_LIMIT", 2):
                 self.assertFalse(should_run_startup_scan(tmp, True))
                 self.assertIn("항목", startup_scan_skip_reason(tmp, True))
 
