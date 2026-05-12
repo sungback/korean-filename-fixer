@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import sqlite3
+import threading
 import time
 import unicodedata
 import uuid
@@ -41,8 +42,12 @@ DEFAULT_EXCLUDE_PATTERNS = (
 )
 DRIVEFS_SYNC_TIMEOUT = 60.0
 DRIVEFS_SYNC_POLL_INTERVAL = 1.0
+DRIVEFS_CONTEXTS_TTL = 30.0
 SCAN_YIELD_INTERVAL = 100
 PROGRESS_NOTIFY_INTERVAL = 100
+
+_drivefs_contexts_cache: tuple[float, list] | None = None
+_drivefs_contexts_lock = threading.Lock()
 
 
 def _cancel_requested(cancel_event) -> bool:
@@ -159,6 +164,19 @@ def _is_relative_to(path: str, root: str) -> bool:
 
 def _drivefs_contexts() -> list[_DriveFSContext]:
     """로컬 Google Drive mirror DB에서 계정별 내 드라이브 루트를 찾는다."""
+    global _drivefs_contexts_cache
+    now = time.monotonic()
+    with _drivefs_contexts_lock:
+        if _drivefs_contexts_cache is not None:
+            expires_at, cached = _drivefs_contexts_cache
+            if now < expires_at:
+                return cached
+        contexts = _drivefs_contexts_scan()
+        _drivefs_contexts_cache = (now + DRIVEFS_CONTEXTS_TTL, contexts)
+        return contexts
+
+
+def _drivefs_contexts_scan() -> list[_DriveFSContext]:
     base_dir = _drivefs_base_dir()
     if not os.path.isdir(base_dir):
         return []
