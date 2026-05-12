@@ -11,6 +11,7 @@ from converter import (
     ConvertResult,
     convert_file,
     convert_folder,
+    folder_after_results,
     is_nfd,
     plan_file,
     preview_folder,
@@ -447,6 +448,32 @@ class ScanPolicyTests(unittest.TestCase):
             with patch("converter.STARTUP_SCAN_ENTRY_LIMIT", 2):
                 self.assertFalse(should_run_startup_scan(tmp, True))
                 self.assertIn("항목", startup_scan_skip_reason(tmp, True))
+
+
+class FolderAfterResultsTests(unittest.TestCase):
+    def _result(self, path, original, status="converted"):
+        return ConvertResult(path, original, os.path.basename(path), status, "")
+
+    def test_returns_new_nfc_path_when_nfd_root_folder_was_converted(self):
+        nfd = nfd_name("한글")
+        nfc = "한글"
+        results = [ConvertResult(f"/tmp/{nfc}", nfd, nfc, "converted", "")]
+        self.assertEqual(folder_after_results(f"/tmp/{nfd}", results), f"/tmp/{nfc}")
+
+    def test_returns_original_when_no_matching_result(self):
+        results = [self._result("/tmp/다른폴더", "다른폴더")]
+        self.assertEqual(folder_after_results("/tmp/한글", results), "/tmp/한글")
+
+    def test_returns_original_when_result_status_is_not_converted(self):
+        results = [self._result("/tmp/한글", "한글", status="skipped")]
+        self.assertEqual(folder_after_results("/tmp/한글", results), "/tmp/한글")
+
+    def test_returns_original_when_result_is_in_different_parent(self):
+        results = [self._result("/other/한글", "한글")]
+        self.assertEqual(folder_after_results("/tmp/한글", results), "/tmp/한글")
+
+    def test_returns_original_when_results_empty(self):
+        self.assertEqual(folder_after_results("/tmp/폴더", []), "/tmp/폴더")
 
 
 if __name__ == "__main__":

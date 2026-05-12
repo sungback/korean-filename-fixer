@@ -78,6 +78,7 @@ from converter import (
     ConvertResult,
     clean_exclude_patterns,
     convert_folder,
+    folder_after_results,
     nfd_to_visual,
     preview_folder,
     startup_scan_skip_reason,
@@ -627,21 +628,8 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         except Exception as e:
             self._cmd_queue.put(("batch_failed", folder, resume_watch, str(e)))
 
-    def _folder_after_results(self, folder: str, results: list) -> str:
-        """선택한 루트 폴더가 변환되었으면 변환 후 경로를 반환한다."""
-        parent = os.path.dirname(folder)
-        original_name = os.path.basename(folder)
-        for result in results:
-            if (
-                result.status == "converted"
-                and result.original == original_name
-                and os.path.dirname(result.path) == parent
-            ):
-                return result.path
-        return folder
-
     def _sync_folder_after_conversion(self, folder: str, results: list) -> str:
-        new_folder = self._folder_after_results(folder, results)
+        new_folder = folder_after_results(folder, results)
         if new_folder != folder:
             self.folder_var.set(new_folder)
             if self.remember_var.get():

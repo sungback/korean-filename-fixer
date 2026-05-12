@@ -709,3 +709,17 @@ def should_run_startup_scan(
         and os.path.isdir(folder)
         and not startup_scan_skip_reason(folder, scan_on_startup, exclude_patterns)
     )
+
+
+def folder_after_results(folder: str, results: list) -> str:
+    """변환 결과에서 루트 폴더 자체가 변환됐으면 새 경로를, 아니면 원래 경로를 반환한다."""
+    parent = os.path.dirname(folder)
+    original_name = os.path.basename(folder)
+    for result in results:
+        if (
+            result.status == "converted"
+            and result.original == original_name
+            and os.path.dirname(result.path) == parent
+        ):
+            return result.path
+    return folder
