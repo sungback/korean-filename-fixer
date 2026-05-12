@@ -16,6 +16,16 @@ class GuiTests(unittest.TestCase):
         app.after = Mock(side_effect=AssertionError("worker must not call Tk"))
         return app
 
+    def make_poll_app(self):
+        app = object.__new__(App)
+        app._queue = queue.Queue()
+        app._cmd_queue = queue.Queue()
+        app._poll_after_id = None
+        app._shutting_down = False
+        app.after = Mock(return_value="after-id")
+        app._log_result = Mock()
+        return app
+
     def test_load_config_starts_watch_when_startup_scan_is_skipped(self):
         app = object.__new__(App)
         app.exclude_var = Mock()
@@ -195,13 +205,7 @@ class GuiTests(unittest.TestCase):
         app.after.assert_not_called()
 
     def test_poll_queue_dispatches_worker_completion_commands(self):
-        app = object.__new__(App)
-        app._queue = queue.Queue()
-        app._cmd_queue = queue.Queue()
-        app._poll_after_id = None
-        app._shutting_down = False
-        app.after = Mock(return_value="after-id")
-        app._log_result = Mock()
+        app = self.make_poll_app()
         app._on_preview_done = Mock()
         results = [object()]
         app._cmd_queue.put(("preview_done", results, "folder", True))
@@ -212,13 +216,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(app._poll_after_id, "after-id")
 
     def test_poll_queue_dispatches_progress_commands(self):
-        app = object.__new__(App)
-        app._queue = queue.Queue()
-        app._cmd_queue = queue.Queue()
-        app._poll_after_id = None
-        app._shutting_down = False
-        app.after = Mock(return_value="after-id")
-        app._log_result = Mock()
+        app = self.make_poll_app()
         app._on_operation_progress = Mock()
         app._cmd_queue.put(("operation_progress", "시작 스캔", "convert", 25, 100))
 
@@ -353,45 +351,6 @@ class GuiTests(unittest.TestCase):
         app.status_var.set.assert_called_once_with("시작 스캔을 건너뛰는 중...")
         app.btn_stop.config.assert_called_once_with(state="disabled", text="건너뛰는 중...")
         app._log.assert_called_once_with("시작 시 누락분 스캔 건너뛰기 요청", "info")
-
-    def test_startup_scan_cancelled_logs_partial_results_and_starts_watch(self):
-        app = object.__new__(App)
-        app._set_startup_scan_running = Mock()
-        app._start_watch = Mock()
-        app._sync_folder_after_conversion = Mock(return_value="folder")
-        app._log_result = Mock()
-        app._log = Mock()
-        app.status_var = Mock()
-        results = [
-            ConvertResult("a", "a", "a", "converted"),
-            ConvertResult("b", "b", "b", "skipped"),
-        ]
-
-        app._on_startup_scan_cancelled(results, "folder")
-
-        self.assertEqual(app._log_result.call_count, 2)
-        app._log_result.assert_any_call(results[0])
-        app._log_result.assert_any_call(results[1])
-        app.status_var.set.assert_called_once()
-        self.assertIn("건너뜀", app.status_var.set.call_args.args[0])
-        app._set_startup_scan_running.assert_called_once_with(False)
-        app._sync_folder_after_conversion.assert_called_once_with("folder", results)
-        app._start_watch.assert_called_once_with()
-
-    def test_startup_scan_cancelled_syncs_converted_root_before_starting_watch(self):
-        app = object.__new__(App)
-        app._set_startup_scan_running = Mock()
-        app._start_watch = Mock()
-        app._sync_folder_after_conversion = Mock(return_value="new-folder")
-        app._log_result = Mock()
-        app._log = Mock()
-        app.status_var = Mock()
-        results = [ConvertResult("new-folder", "old-folder", "new-folder", "converted")]
-
-        app._on_startup_scan_cancelled(results, "old-folder")
-
-        app._sync_folder_after_conversion.assert_called_once_with("old-folder", results)
-        app._start_watch.assert_called_once_with()
 
     def test_log_area_wraps_lines_to_visible_width(self):
         app = object.__new__(App)
@@ -532,6 +491,40 @@ class CallbackTests(unittest.TestCase):
         app._start_watch.assert_called_once_with()
         status = app.status_var.set.call_args.args[0]
         self.assertIn("완료", status)
+
+    def test_on_startup_scan_cancelled_logs_partial_results_and_starts_watch(self):
+        app = self._make_app({
+            "_set_startup_scan_running": Mock(),
+            "_start_watch": Mock(),
+        })
+        results = [
+            ConvertResult("a", "a", "a", "converted"),
+            ConvertResult("b", "b", "b", "skipped"),
+        ]
+
+        app._on_startup_scan_cancelled(results, "folder")
+
+        self.assertEqual(app._log_result.call_count, 2)
+        app._log_result.assert_any_call(results[0])
+        app._log_result.assert_any_call(results[1])
+        app.status_var.set.assert_called_once()
+        self.assertIn("건너뜀", app.status_var.set.call_args.args[0])
+        app._set_startup_scan_running.assert_called_once_with(False)
+        app._sync_folder_after_conversion.assert_called_once_with("folder", results)
+        app._start_watch.assert_called_once_with()
+
+    def test_on_startup_scan_cancelled_syncs_converted_root_before_starting_watch(self):
+        app = self._make_app({
+            "_set_startup_scan_running": Mock(),
+            "_start_watch": Mock(),
+            "_sync_folder_after_conversion": Mock(return_value="new-folder"),
+        })
+        results = [ConvertResult("new-folder", "old-folder", "new-folder", "converted")]
+
+        app._on_startup_scan_cancelled(results, "old-folder")
+
+        app._sync_folder_after_conversion.assert_called_once_with("old-folder", results)
+        app._start_watch.assert_called_once_with()
 
 
 if __name__ == "__main__":
