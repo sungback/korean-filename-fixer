@@ -15,6 +15,10 @@ from converter import (
     plan_file,
     preview_folder,
     should_exclude_path,
+    should_ignore_name,
+    should_run_startup_scan,
+    startup_scan_skip_reason,
+    STARTUP_SCAN_ENTRY_LIMIT,
 )
 
 
@@ -392,6 +396,57 @@ class ConverterTests(unittest.TestCase):
 
             self.assertEqual(statuses["예정.txt"], "preview")
             self.assertEqual(statuses["already-nfc.txt"], "skipped")
+
+
+class IgnoreNameTests(unittest.TestCase):
+    def test_ignores_nfc_tmp_names(self):
+        self.assertTrue(should_ignore_name("__nfc_tmp_abc123__"))
+        self.assertTrue(should_ignore_name("__nfc_tmp_00000000__"))
+        self.assertFalse(should_ignore_name("__nfc_tmp_abc123"))  # 끝 __ 없음
+        self.assertFalse(should_ignore_name("normal.txt"))
+
+    def test_ignores_sb_temp_names(self):
+        self.assertTrue(should_ignore_name("document.sb-abc123-def456"))
+        self.assertTrue(should_ignore_name("file.sb-A1-B2-C3"))
+        self.assertFalse(should_ignore_name("file.sb-abc"))   # 세그먼트 1개
+        self.assertFalse(should_ignore_name("file.sb"))
+        self.assertFalse(should_ignore_name("normal.txt"))
+
+
+class ScanPolicyTests(unittest.TestCase):
+    def test_should_run_startup_scan_requires_existing_folder_and_enabled_setting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(should_run_startup_scan(tmp, True))
+            self.assertFalse(should_run_startup_scan(tmp, False))
+
+    def test_should_run_startup_scan_rejects_missing_folder(self):
+        self.assertFalse(should_run_startup_scan("", True))
+        self.assertFalse(should_run_startup_scan("/path/does/not/exist", True))
+
+    def test_should_run_startup_scan_skips_likely_sync_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            drive_root = os.path.join(
+                tmp,
+                "Library",
+                "CloudStorage",
+                "GoogleDrive-user@example.com",
+                "내 드라이브",
+            )
+            nested_folder = os.path.join(drive_root, "Project")
+            os.makedirs(nested_folder)
+
+            self.assertFalse(should_run_startup_scan(drive_root, True))
+            self.assertIn("동기화", startup_scan_skip_reason(drive_root, True))
+            self.assertTrue(should_run_startup_scan(nested_folder, True))
+
+    def test_should_run_startup_scan_skips_large_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for index in range(3):
+                open(os.path.join(tmp, f"file-{index}.txt"), "w").close()
+
+            with patch("converter.STARTUP_SCAN_ENTRY_LIMIT", 2):
+                self.assertFalse(should_run_startup_scan(tmp, True))
+                self.assertIn("항목", startup_scan_skip_reason(tmp, True))
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from converter import ConvertResult
-from watcher import NFDHandler
+from watcher import FolderWatcher, NFDHandler
 
 
 def nfd_name(text: str) -> str:
@@ -174,6 +174,40 @@ class WatcherTests(unittest.TestCase):
 
             self.assertEqual(captured, [])
             self.assertFalse(handler._worker.is_alive())
+
+
+class FolderWatcherTests(unittest.TestCase):
+    def test_is_not_running_before_start(self):
+        watcher = FolderWatcher(callback=lambda result: None)
+        self.assertFalse(watcher.is_running)
+
+    def test_is_running_after_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            watcher = FolderWatcher(callback=lambda result: None)
+            watcher.start(tmp)
+            self.addCleanup(watcher.stop)
+            self.assertTrue(watcher.is_running)
+
+    def test_is_not_running_after_stop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            watcher = FolderWatcher(callback=lambda result: None)
+            watcher.start(tmp)
+            watcher.stop()
+            self.assertFalse(watcher.is_running)
+
+    def test_restart_switches_to_new_folder(self):
+        with tempfile.TemporaryDirectory() as tmp1:
+            with tempfile.TemporaryDirectory() as tmp2:
+                watcher = FolderWatcher(callback=lambda result: None)
+                watcher.start(tmp1)
+                self.addCleanup(watcher.stop)
+                watcher.start(tmp2)
+                self.assertTrue(watcher.is_running)
+
+    def test_stop_is_idempotent_when_not_running(self):
+        watcher = FolderWatcher(callback=lambda result: None)
+        watcher.stop()  # should not raise
+        self.assertFalse(watcher.is_running)
 
 
 if __name__ == "__main__":
