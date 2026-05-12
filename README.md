@@ -34,6 +34,8 @@ korean-filename-fixer/
 ├── gui.py           # tkinter 기반 GUI (App 클래스)
 ├── converter.py     # NFD→NFC 변환 로직 (ConvertResult, convert_folder 등)
 ├── watcher.py       # watchdog 기반 실시간 폴더 감시 (FolderWatcher)
+├── autostart.py     # 로그인 시 자동 시작 등록/해제
+├── tests/           # pytest 테스트 스위트
 ├── build.sh         # PyInstaller 빌드 스크립트 (macOS onedir / Windows onedir)
 ├── scripts/         # 릴리스 전 수동 스모크 테스트
 └── requirements.txt # 의존성 목록
@@ -101,6 +103,12 @@ Developer ID 서명과 Apple notarization 준비 절차는 [macOS Code Signing a
 | `watchdog >= 4.0.0` | 실시간 파일 시스템 이벤트 감시 |
 | `pyobjc-framework-Cocoa >= 10.0` | macOS 메뉴바 트레이(AppKit) 연동 |
 | `pyinstaller >= 6.0.0` | 앱 패키징 및 배포용 빌드 |
+
+## 테스트 실행
+
+```bash
+python -m pytest tests/
+```
 
 ## 릴리스 전 스모크 테스트
 

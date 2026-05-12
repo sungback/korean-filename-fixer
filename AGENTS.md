@@ -15,9 +15,11 @@ macOS에서 한글 파일명을 NFD → NFC로 변환해 Windows/Linux와의 호
 | 파일 | 역할 |
 |---|---|
 | `main.py` | 진입점 — 로깅 초기화 후 App 실행 |
-| `converter.py` | NFD→NFC 변환 로직 (파일/폴더) |
+| `converter.py` | NFD→NFC 변환 로직 (파일/폴더, `folder_after_results` 포함) |
 | `watcher.py` | 실시간 폴더 감시 (NFDHandler, FolderWatcher) |
 | `gui.py` | tkinter GUI, 트레이 아이콘, 설정 저장 |
+| `autostart.py` | 로그인 시 자동 시작 등록/해제 (LaunchAgent / 레지스트리) |
+| `tests/` | pytest 테스트 스위트 (test_converter, test_watcher, test_gui, test_autostart) |
 | `scripts/smoke_google_drive.py` | Google Drive 실폴더 수동 스모크 테스트 |
 | `docs/macos-signing-notarization.md` | macOS Developer ID 서명·공증 준비 문서 |
 
@@ -30,7 +32,7 @@ bash build.sh
 
 ## 핵심 설계 결정
 - **NFD 변환 전략**: 단순 `os.rename(NFD→NFC)` 은 macOS HFS+가 동일하게 취급해 Google Drive가 감지 못함
-  - 파일: `copy2 → 삭제 → rename` (Drive가 삭제+생성으로 인식)
+  - 파일: `rename(NFD→tmp) → DriveFS 동기화 대기 → rename(tmp→NFC)` (임시 이름 경유 2단계 rename)
   - 폴더: 임시 이름 경유 2단계 rename
 - **미리보기(드라이런)**: 실제 변환 전에 예정 이름과 충돌 여부를 계산해 로그로 확인 가능
 - **시작 시 자동 스캔**: 저장된 감시 폴더가 있으면 앱 시작 직후 누락된 NFD 파일을 한 번 정리한 뒤 감시 시작
@@ -40,6 +42,8 @@ bash build.sh
 - **이벤트 중복 방지**: FSEvents가 동일 파일 이벤트를 연속 발생시키므로 `_DEDUP_WINDOW=0.2s` 적용
 - **스레드 안전**: GUI 업데이트는 Queue → `after(100ms)` 폴링으로 메인 스레드에서만 처리
 - **경로 정규화**: FSEventsObserver가 경로를 NFC로 반환할 수 있어 `os.scandir`로 실제 NFD 경로를 재탐색
+- **변환 취소**: `stop_event`(threading.Event)를 `convert_file` → DriveFS 대기 루프까지 전달, watcher 종료 시 즉시 중단
+- **DriveFS 컨텍스트 캐시**: `mirror_sqlite.db` 스캔 결과를 TTL 30s로 캐싱해 반복 I/O 방지 (`DRIVEFS_CONTEXTS_TTL`)
 
 ## 배포 (GitHub Actions)
 `v*` 태그 푸시 시 macOS/Windows 자동 빌드 및 GitHub Release 생성 (`.github/workflows/build.yml`)
@@ -48,7 +52,7 @@ bash build.sh
 git tag vX.X.X && git push origin main && git push origin vX.X.X
 ```
 
-- 태그 규칙: `v{major}.{minor}.{patch}` — 최신 `v1.11.0`
+- 태그 규칙: `v{major}.{minor}.{patch}` — 최신 `v1.11.5`
 - 기능 추가: minor 버전 업, 버그 수정/리팩토링: patch 버전 업
 - **소스 기능 변경이 없을 때(문서, 설정 등)는 태그 없이 push만**
 
