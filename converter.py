@@ -201,6 +201,7 @@ def _drivefs_mirror_item_for_path(path: str) -> sqlite3.Row | None:
         return None
 
     mirror_db = os.path.join(context.account_dir, "mirror_sqlite.db")
+    con = None
     try:
         con = sqlite3.connect(f"file:{mirror_db}?mode=ro", uri=True)
         con.row_factory = sqlite3.Row
