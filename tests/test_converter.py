@@ -475,6 +475,17 @@ class FolderAfterResultsTests(unittest.TestCase):
     def test_returns_original_when_results_empty(self):
         self.assertEqual(folder_after_results("/tmp/폴더", []), "/tmp/폴더")
 
+    def test_matches_when_parent_path_has_nfd_nfc_mismatch(self):
+        nfd_parent = f"/tmp/{nfd_name('부모')}"
+        nfc_parent = "/tmp/부모"
+        nfd_folder = nfd_name("한글")
+        nfc_folder = "한글"
+        results = [ConvertResult(f"{nfc_parent}/{nfc_folder}", nfd_folder, nfc_folder, "converted", "")]
+        self.assertEqual(
+            folder_after_results(f"{nfd_parent}/{nfd_folder}", results),
+            f"{nfc_parent}/{nfc_folder}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
