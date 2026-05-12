@@ -11,8 +11,10 @@ import json
 import logging
 import os
 import queue
+import subprocess
 import sys
 import threading
+from logging.handlers import RotatingFileHandler
 try:
     import tkinter as tk
     from tkinter import filedialog, scrolledtext, ttk
@@ -23,6 +25,13 @@ except ImportError as e:
     filedialog = scrolledtext = ttk = None
     _TKINTER_AVAILABLE = False
     _TKINTER_IMPORT_ERROR = e
+
+try:
+    import tkinterdnd2 as _tkdnd
+    _TKDND_AVAILABLE = True
+except ImportError:
+    _tkdnd = None
+    _TKDND_AVAILABLE = False
 
 try:
     from AppKit import (NSStatusBar, NSVariableStatusItemLength,
@@ -67,7 +76,7 @@ def setup_logging():
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
         handlers=[
-            logging.FileHandler(log_path, encoding="utf-8"),
+            RotatingFileHandler(log_path, maxBytes=5*1024*1024, backupCount=3, encoding="utf-8"),
             logging.StreamHandler(),
         ]
     )
@@ -93,7 +102,14 @@ from autostart import (
 from watcher import FolderWatcher
 
 
-class App(tk.Tk if _TKINTER_AVAILABLE else object):
+_AppBase = (
+    _tkdnd.TkinterDnD.Tk if _TKDND_AVAILABLE and _TKINTER_AVAILABLE
+    else tk.Tk if _TKINTER_AVAILABLE
+    else object
+)
+
+
+class App(_AppBase):
     def __init__(self):
         if not _TKINTER_AVAILABLE:
             raise RuntimeError(
@@ -115,9 +131,13 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         self._startup_scan_in_progress = False
         self._startup_scan_cancel_event: threading.Event | None = None
         self._watch_paused_for_operation = False
+        self._stats = {"converted": 0, "error": 0, "conflict": 0}
+        self._watcher_notify_count = 0
+        self._watcher_notify_after_id = None
         self._autostart_path = get_autostart_executable_path()
 
         self._build_ui()
+        self._setup_drop()
         self._apply_window_constraints()
         self._load_config()
         self._poll_queue()
@@ -185,6 +205,7 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         self._build_button_row()
         ttk.Separator(self, orient="horizontal").pack(fill="x", pady=(0, 8))
         self._build_status_label()
+        self._build_stats_label()
         self._build_log_area()
 
     def _build_folder_row(self):
@@ -205,8 +226,8 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
                      command=self._choose_folder).pack(side="right", padx=(4, 0))
 
         self.folder_var = tk.StringVar()
-        tk.Entry(frame, textvariable=self.folder_var,
-                 state="readonly").pack(side="left", padx=(6, 4), fill="x", expand=True)
+        self.folder_entry = tk.Entry(frame, textvariable=self.folder_var, state="readonly")
+        self.folder_entry.pack(side="left", padx=(6, 4), fill="x", expand=True)
 
     def _build_exclude_row(self):
         """제외할 디렉터리 패턴 입력 행을 구성한다."""
@@ -248,6 +269,14 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         if not self._autostart_path:
             self.chk_launch_on_login.config(state="disabled")
 
+        self.notify_on_convert_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            frame,
+            text="변환 시 알림",
+            variable=self.notify_on_convert_var,
+            command=self._on_notify_toggle,
+        ).pack(side="left", padx=(12, 0))
+
     def _build_button_row(self):
         """감시 제어 버튼 행을 구성한다."""
         frame = tk.Frame(self)
@@ -276,6 +305,17 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         self.status_var = tk.StringVar(value="폴더를 선택하세요.")
         tk.Label(self, textvariable=self.status_var,
                  anchor="w", fg="gray").pack(fill="x", pady=(0, 4))
+
+    def _build_stats_label(self):
+        self.stats_var = tk.StringVar(value="이번 세션: 변환 0 | 오류 0 | 충돌 0")
+        tk.Label(self, textvariable=self.stats_var,
+                 anchor="w", fg="gray").pack(fill="x", pady=(0, 4))
+
+    def _refresh_stats(self):
+        c = self._stats["converted"]
+        e = self._stats["error"]
+        cf = self._stats["conflict"]
+        self.stats_var.set(f"이번 세션: 변환 {c} | 오류 {e} | 충돌 {cf}")
 
     def _build_log_area(self):
         """스크롤 가능한 로그 텍스트 영역과 색상 태그를 구성한다."""
@@ -328,6 +368,7 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
             )
             self.exclude_var.set(self._format_exclude_patterns(exclude_patterns))
             self.scan_on_startup_var.set(bool(data.get("scan_on_startup", True)))
+            self.notify_on_convert_var.set(bool(data.get("notify_on_convert", True)))
             self._sync_autostart_state()
             folder = data.get("folder", "")
             if folder and os.path.isdir(folder):
@@ -361,6 +402,7 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
                     "folder": self.folder_var.get(),
                     "exclude_patterns": self._get_exclude_patterns(),
                     "scan_on_startup": self.scan_on_startup_var.get(),
+                    "notify_on_convert": self.notify_on_convert_var.get(),
                 }, f, ensure_ascii=False)
         else:
             try:
@@ -409,6 +451,35 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
                 self.launch_on_login_var.set(True)
                 self._log(f"로그인 시 자동 시작 해제 실패: {e}", "error")
 
+    def _on_notify_toggle(self):
+        if self.remember_var.get() and self.folder_var.get():
+            self._save_config()
+
+    @staticmethod
+    def _osascript_escape(text: str) -> str:
+        return text.replace("\\", "\\\\").replace('"', '\\"')
+
+    def _send_notification(self, title: str, body: str):
+        if sys.platform != "darwin":
+            return
+        try:
+            t = self._osascript_escape(title)
+            b = self._osascript_escape(body)
+            subprocess.run(
+                ["osascript", "-e", f'display notification "{b}" with title "{t}"'],
+                timeout=3,
+                capture_output=True,
+            )
+        except Exception:
+            pass
+
+    def _flush_watcher_notification(self):
+        self._watcher_notify_after_id = None
+        n = self._watcher_notify_count
+        self._watcher_notify_count = 0
+        if n > 0:
+            self._send_notification("Korean Filename Fixer", f"{n}개 파일 변환 완료")
+
     def _get_exclude_patterns(self) -> list[str]:
         return clean_exclude_patterns(self.exclude_var.get().split(","))
 
@@ -455,6 +526,28 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         self.btn_once.config(state="disabled" if running else "normal")
 
     # ─── 폴더 선택 및 감시 제어 ──────────────────────────────
+
+    def _setup_drop(self):
+        if not _TKDND_AVAILABLE:
+            return
+        try:
+            self.folder_entry.drop_target_register(_tkdnd.DND_FILES)
+            self.folder_entry.dnd_bind("<<Drop>>", self._on_dnd_drop)
+        except Exception as e:
+            logging.warning(f"DnD 등록 실패: {e}")
+
+    def _on_dnd_drop(self, event):
+        path = event.data.strip()
+        if path.startswith("{") and path.endswith("}"):
+            path = path[1:-1]
+        if os.path.isfile(path):
+            path = os.path.dirname(path)
+        if os.path.isdir(path):
+            self.folder_var.set(path)
+            self._log(f"폴더 선택 (드래그앤드롭): {path}", "info")
+            self.status_var.set("폴더가 선택되었습니다.")
+            if self.remember_var.get():
+                self._save_config()
 
     def _choose_folder(self):
         folder = filedialog.askdirectory(title="감시할 폴더를 선택하세요")
@@ -651,7 +744,7 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         skipped   = [r for r in results if r.status == "skipped"]
 
         for r in results:
-            self._log_result(r)
+            self._log_result(r, notify=False)
 
         summary = (f"완료 — 변환: {len(converted)}개 / "
                    f"충돌: {len(conflicts)}개 / "
@@ -659,6 +752,8 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
                    f"건너뜀: {len(skipped)}개")
         self.status_var.set(summary)
         self._log(summary, "info")
+        if converted and self.notify_on_convert_var.get():
+            self._send_notification("Korean Filename Fixer", summary)
         self.btn_once.config(state="normal")
 
         folder = self._sync_folder_after_conversion(folder, results)
@@ -718,7 +813,7 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         skipped   = [r for r in results if r.status == "skipped"]
 
         for r in results:
-            self._log_result(r)
+            self._log_result(r, notify=False)
 
         summary = (f"시작 시 누락분 처리 완료 — 변환: {len(converted)}개 / "
                    f"충돌: {len(conflicts)}개 / "
@@ -726,6 +821,8 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
                    f"건너뜀: {len(skipped)}개")
         self.status_var.set(summary)
         self._log(summary, "info")
+        if converted and self.notify_on_convert_var.get():
+            self._send_notification("Korean Filename Fixer", summary)
         self._set_startup_scan_running(False)
         self._sync_folder_after_conversion(folder, results)
         self._start_watch()
@@ -738,7 +835,7 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         skipped   = [r for r in results if r.status == "skipped"]
 
         for r in results:
-            self._log_result(r)
+            self._log_result(r, notify=False)
 
         summary = (f"시작 스캔 건너뜀 — 변환: {len(converted)}개 / "
                    f"충돌: {len(conflicts)}개 / "
@@ -863,19 +960,28 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
                 self._update_tray_menu_state(watching=False)
         self._health_check_after_id = self.after(5000, self._health_check)
 
-    def _log_result(self, result: ConvertResult):
+    def _log_result(self, result: ConvertResult, notify: bool = True):
         if result.status == "converted":
+            self._stats["converted"] += 1
             visual = nfd_to_visual(result.original)
             self._log(f"✓ {visual}  →  {result.converted}", "converted")
+            if notify and self.notify_on_convert_var.get():
+                self._watcher_notify_count += 1
+                if self._watcher_notify_after_id is not None:
+                    self.after_cancel(self._watcher_notify_after_id)
+                self._watcher_notify_after_id = self.after(3000, self._flush_watcher_notification)
         elif result.status == "preview":
             visual = nfd_to_visual(result.original)
             self._log(f"→ {visual}  →  {result.converted}", "preview")
         elif result.status == "conflict":
+            self._stats["conflict"] += 1
             visual = nfd_to_visual(result.original)
             self._log(f"! {visual}  충돌: {result.error}", "conflict")
         elif result.status == "error":
+            self._stats["error"] += 1
             visual = nfd_to_visual(result.original)
             self._log(f"✗ {visual}  오류: {result.error}", "error")
+        self._refresh_stats()
 
     def _clear_log(self):
         self.log.config(state="normal")
@@ -979,7 +1085,7 @@ class App(tk.Tk if _TKINTER_AVAILABLE else object):
         if self._startup_scan_cancel_event is not None:
             self._startup_scan_cancel_event.set()
         self.watcher.stop()
-        for attr in ("_poll_after_id", "_health_check_after_id"):
+        for attr in ("_poll_after_id", "_health_check_after_id", "_watcher_notify_after_id"):
             after_id = getattr(self, attr, None)
             if after_id is not None:
                 try:

@@ -31,6 +31,7 @@ class GuiTests(unittest.TestCase):
         app.exclude_var = Mock()
         app.scan_on_startup_var = Mock()
         app.scan_on_startup_var.get.return_value = True
+        app.notify_on_convert_var = Mock()
         app.remember_var = Mock()
         app.folder_var = Mock()
         app.status_var = Mock()
@@ -412,6 +413,8 @@ class CallbackTests(unittest.TestCase):
         app._resume_watch = Mock()
         app._sync_folder_after_conversion = Mock(side_effect=lambda f, r: f)
         app.status_var = Mock()
+        app.notify_on_convert_var = Mock()
+        app._send_notification = Mock()
         if extra_attrs:
             for k, v in extra_attrs.items():
                 setattr(app, k, v)
@@ -505,8 +508,8 @@ class CallbackTests(unittest.TestCase):
         app._on_startup_scan_cancelled(results, "folder")
 
         self.assertEqual(app._log_result.call_count, 2)
-        app._log_result.assert_any_call(results[0])
-        app._log_result.assert_any_call(results[1])
+        app._log_result.assert_any_call(results[0], notify=False)
+        app._log_result.assert_any_call(results[1], notify=False)
         app.status_var.set.assert_called_once()
         self.assertIn("건너뜀", app.status_var.set.call_args.args[0])
         app._set_startup_scan_running.assert_called_once_with(False)
