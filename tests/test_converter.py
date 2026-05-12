@@ -110,7 +110,7 @@ class ConverterTests(unittest.TestCase):
 
             cancel_event = threading.Event()
 
-            def convert_and_cancel(path):
+            def convert_and_cancel(path, **kwargs):
                 cancel_event.set()
                 return ConvertResult(path, os.path.basename(path), os.path.basename(path), "skipped")
 
@@ -139,7 +139,7 @@ class ConverterTests(unittest.TestCase):
                 with open(path, "w", encoding="utf-8") as f:
                     f.write("content")
 
-            def skip(path):
+            def skip(path, **kwargs):
                 return ConvertResult(path, os.path.basename(path), os.path.basename(path), "skipped")
 
             with patch("converter.convert_file", side_effect=skip):
@@ -156,7 +156,7 @@ class ConverterTests(unittest.TestCase):
                     f.write("content")
             progress_events = []
 
-            def skip(path):
+            def skip(path, **kwargs):
                 return ConvertResult(path, os.path.basename(path), os.path.basename(path), "skipped")
 
             with patch("converter.convert_file", side_effect=skip):
@@ -207,7 +207,7 @@ class ConverterTests(unittest.TestCase):
                 rename_calls.append((os.path.basename(src), os.path.basename(dst)))
                 return real_rename(src, dst)
 
-            def wait_for_cloud_name(path, expected_name, timeout=None):
+            def wait_for_cloud_name(path, expected_name, timeout=None, stop_event=None):
                 if expected_name.startswith("__nfc_tmp_"):
                     self.assertTrue(os.path.exists(path))
                     self.assertFalse(os.path.exists(expected_path))

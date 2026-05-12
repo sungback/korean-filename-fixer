@@ -263,19 +263,22 @@ def _wait_for_drivefs_cloud_filename(
     path: str,
     expected_name: str,
     timeout: float | None = None,
+    stop_event=None,
 ) -> bool:
     """DriveFS mirror DB의 서버 파일명이 expected_name이 될 때까지 기다린다."""
     if timeout is None:
         timeout = DRIVEFS_SYNC_TIMEOUT
     deadline = time.monotonic() + timeout
     while time.monotonic() <= deadline:
+        if stop_event is not None and stop_event.is_set():
+            return False
         if _drivefs_cloud_filename(path) == expected_name:
             return True
         time.sleep(DRIVEFS_SYNC_POLL_INTERVAL)
     return False
 
 
-def _rename_dir(src: str, tmp: str, dst: str):
+def _rename_dir(src: str, tmp: str, dst: str, stop_event=None):
     """폴더를 NFD→NFC로 rename한다.
 
     macOS HFS+는 NFD↔NFC를 동일하게 취급하므로 임시 이름을 중간에 거쳐
@@ -285,11 +288,15 @@ def _rename_dir(src: str, tmp: str, dst: str):
     wait_for_drivefs = _drivefs_needs_server_rename(src, dst_name)
 
     os.rename(src, tmp)
-    if wait_for_drivefs and not _wait_for_drivefs_cloud_filename(tmp, os.path.basename(tmp)):
+    if wait_for_drivefs and not _wait_for_drivefs_cloud_filename(
+        tmp, os.path.basename(tmp), stop_event=stop_event
+    ):
         raise TimeoutError(f"Drive 서버 임시 이름 반영 시간 초과: {os.path.basename(tmp)}")
 
     os.rename(tmp, dst)
-    if wait_for_drivefs and not _wait_for_drivefs_cloud_filename(dst, dst_name):
+    if wait_for_drivefs and not _wait_for_drivefs_cloud_filename(
+        dst, dst_name, stop_event=stop_event
+    ):
         raise TimeoutError(f"Drive 서버 최종 이름 반영 시간 초과: {dst_name}")
 
 
@@ -299,7 +306,7 @@ def _rename_symlink(src: str, tmp: str, dst: str):
     os.rename(tmp, dst)
 
 
-def _rename_file(src: str, tmp: str, dst: str):
+def _rename_file(src: str, tmp: str, dst: str, stop_event=None):
     """파일을 NFD→NFC로 rename한다.
 
     Google DriveFS는 NFD→NFC를 바로 처리하면 서버 title은 NFD로 남길 수 있다.
@@ -310,12 +317,16 @@ def _rename_file(src: str, tmp: str, dst: str):
     wait_for_drivefs = _drivefs_needs_server_rename(src, dst_name)
 
     os.rename(src, tmp)
-    if wait_for_drivefs and not _wait_for_drivefs_cloud_filename(tmp, os.path.basename(tmp)):
+    if wait_for_drivefs and not _wait_for_drivefs_cloud_filename(
+        tmp, os.path.basename(tmp), stop_event=stop_event
+    ):
         raise TimeoutError(f"Drive 서버 임시 이름 반영 시간 초과: {os.path.basename(tmp)}")
 
     os.rename(tmp, dst)
     os.utime(dst, None)
-    if wait_for_drivefs and not _wait_for_drivefs_cloud_filename(dst, dst_name):
+    if wait_for_drivefs and not _wait_for_drivefs_cloud_filename(
+        dst, dst_name, stop_event=stop_event
+    ):
         raise TimeoutError(f"Drive 서버 최종 이름 반영 시간 초과: {dst_name}")
 
 
@@ -390,7 +401,12 @@ def plan_file(filepath: str) -> ConvertResult:
     return ConvertResult(new_path, original_name, nfc_name, "preview")
 
 
-def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> ConvertResult:
+def convert_file(
+    filepath: str,
+    retry: int = 5,
+    retry_interval: float = 1.0,
+    stop_event=None,
+) -> ConvertResult:
     """파일/폴더 1개를 NFD → NFC로 변환한다. 이미 NFC면 'skipped'를 반환한다."""
     plan = plan_file(filepath)
     dirpath = os.path.dirname(filepath)
@@ -412,9 +428,9 @@ def convert_file(filepath: str, retry: int = 5, retry_interval: float = 1.0) -> 
             if os.path.islink(filepath):
                 _rename_symlink(filepath, tmp_path, new_path)
             elif os.path.isdir(filepath):
-                _rename_dir(filepath, tmp_path, new_path)
+                _rename_dir(filepath, tmp_path, new_path, stop_event=stop_event)
             else:
-                _rename_file(filepath, tmp_path, new_path)
+                _rename_file(filepath, tmp_path, new_path, stop_event=stop_event)
 
             logging.info(f"Converted: {name!r} → {nfc_name!r}")
             return ConvertResult(new_path, name, nfc_name, "converted")
@@ -557,7 +573,7 @@ def convert_folder(
             if index % PROGRESS_NOTIFY_INTERVAL == 0:
                 _notify_progress(progress_callback, "convert", index, total)
             continue
-        results.append(convert_file(entry))
+        results.append(convert_file(entry, stop_event=cancel_event))
         if index % PROGRESS_NOTIFY_INTERVAL == 0:
             _notify_progress(progress_callback, "convert", index, total)
 

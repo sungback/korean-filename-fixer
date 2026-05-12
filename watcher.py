@@ -55,6 +55,7 @@ class NFDHandler(FileSystemEventHandler):
         self._pending: dict[str, tuple[bool, float]] = {}
         self._pending_condition = threading.Condition()
         self._closed = False
+        self._stop_event = threading.Event()
         self._worker = None
         if not self.synchronous:
             self._worker = threading.Thread(
@@ -183,8 +184,9 @@ class NFDHandler(FileSystemEventHandler):
         if self._is_closed():
             return
 
-        result = convert_file(actual_path)
-        self.callback(result)
+        result = convert_file(actual_path, stop_event=self._stop_event)
+        if not self._is_closed():
+            self.callback(result)
 
     def _wait_until_stable(self, path: str) -> bool:
         """파일/폴더가 짧은 시간 동안 변경되지 않을 때까지 기다린다."""
@@ -223,6 +225,7 @@ class NFDHandler(FileSystemEventHandler):
 
     def close(self):
         """예약된 변환을 취소하고 worker 스레드를 정리한다."""
+        self._stop_event.set()
         with self._pending_condition:
             self._closed = True
             self._pending.clear()
