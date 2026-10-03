@@ -378,7 +378,7 @@ class App(_AppBase):
                                      command=self._convert_once)
         self.btn_once.pack(side="left", padx=(0, 6))
 
-        self.btn_update = self._button(frame, text="업데이트 체크",
+        self.btn_update = self._button(frame, text="업데이트 확인",
                                        command=self._check_update_manual)
         self.btn_update.pack(side="left", padx=(0, 6))
 
