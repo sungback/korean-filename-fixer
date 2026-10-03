@@ -1295,6 +1295,7 @@ class App(_AppBase):
         try:
             subprocess.Popen(
                 ["cmd", "/c", batch_path],
+                cwd=tempfile.gettempdir(),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),

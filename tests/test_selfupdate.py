@@ -205,6 +205,8 @@ class BatchTests(unittest.TestCase):
         self.assertIn("KFF_LOG", content)
         self.assertIn(":waitcap", content)
         self.assertIn("rollback", content)
+        self.assertIn('cd /d "%TEMP%"', content)
+        self.assertIn('start "" /d "%KFF_CURRENT%"', content)
 
     def test_batch_reads_tasklist_from_file_not_pipe(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -363,9 +365,10 @@ class BatchLiveTests(unittest.TestCase):
         )
         return batch_path
 
-    def _run(self, batch_path: str) -> tuple[int, str]:
+    def _run(self, batch_path: str, cwd: str | None = None) -> tuple[int, str]:
         proc = subprocess.run(
             ["cmd", "/c", batch_path],
+            cwd=cwd,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=120,
         )
@@ -420,6 +423,32 @@ class BatchLiveTests(unittest.TestCase):
             self.assertTrue(os.path.isfile(marker))
             with open(marker, encoding="utf-8") as f:
                 self.assertEqual(f.read(), "keep me")
+
+    def test_swap_success_escapes_caller_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            current = os.path.join(tmp, "KoreanFilenameFixer")
+            os.makedirs(current)
+            old_marker = os.path.join(current, "old.txt")
+            with open(old_marker, "w", encoding="utf-8") as f:
+                f.write("old")
+            with open(os.path.join(current, WINDOWS_EXE_NAME), "w") as f:
+                f.write("old exe")
+            staging = os.path.join(tmp, "staging")
+            new = os.path.join(staging, "KoreanFilenameFixer")
+            os.makedirs(new)
+            new_marker = os.path.join(new, "new.txt")
+            with open(new_marker, "w", encoding="utf-8") as f:
+                f.write("new")
+            with open(os.path.join(new, WINDOWS_EXE_NAME), "w") as f:
+                f.write("new exe")
+            batch_path = self._write(tmp, current, new, [staging])
+            # 부모 프로세스의 CWD(current)를 상속받은 상황(cwd=current)에서도
+            # 배치 시작 시 cd /d "%TEMP%"로 탈출하여 정상적으로 교체(swap)되어야 한다.
+            _code, log = self._run(batch_path, cwd=current)
+
+            self.assertIn("done", log)
+            self.assertTrue(os.path.isfile(os.path.join(current, "new.txt")))
+            self.assertFalse(os.path.isfile(os.path.join(current, "old.txt")))
 
 
 class SameDriveTests(unittest.TestCase):
