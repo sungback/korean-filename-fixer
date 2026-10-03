@@ -143,7 +143,7 @@ class App(_AppBase):
             ) from _TKINTER_IMPORT_ERROR
 
         super().__init__()
-        self.title("Korean Filename Fixer1")
+        self.title("Korean Filename Fixer2")
         self.resizable(True, True)
         self.configure(padx=16, pady=16)
 
@@ -565,7 +565,7 @@ class App(_AppBase):
         n = self._watcher_notify_count
         self._watcher_notify_count = 0
         if n > 0:
-            self._send_notification("Korean Filename Fixer1", f"{n}개 파일 변환 완료")
+            self._send_notification("Korean Filename Fixer2", f"{n}개 파일 변환 완료")
 
     def _get_exclude_patterns(self) -> list[str]:
         return clean_exclude_patterns(self.exclude_var.get().split(","))
@@ -943,7 +943,7 @@ class App(_AppBase):
         self.status_var.set(summary)
         self._log(summary, "info")
         if converted and self.notify_on_convert_var.get():
-            self._send_notification("Korean Filename Fixer1", summary)
+            self._send_notification("Korean Filename Fixer2", summary)
         self.btn_once.config(state="normal")
 
         updated = self._sync_folders_after_conversion(folders, results)
@@ -1012,7 +1012,7 @@ class App(_AppBase):
         self.status_var.set(summary)
         self._log(summary, "info")
         if converted and self.notify_on_convert_var.get():
-            self._send_notification("Korean Filename Fixer1", summary)
+            self._send_notification("Korean Filename Fixer2", summary)
         self._set_startup_scan_running(False)
         self._sync_folders_after_conversion(folders, results)
         self._start_watch()
