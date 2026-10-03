@@ -69,6 +69,26 @@ if [[ "$(uname)" == "Darwin" ]]; then
 
   "$PYTHON_BIN" -m PyInstaller "${PYINSTALLER_ARGS[@]}" main.py
 
+  echo "=== macOS 번들 버전 기록 ==="
+  APP_VERSION="$("$PYTHON_BIN" -c "from version import APP_VERSION; print(APP_VERSION.lstrip('vV'))")"
+  echo "번들 버전: $APP_VERSION"
+  APP_PLIST="$TMP_DIST/$APP_NAME.app/Contents/Info.plist"
+  for PLIST_KEY in CFBundleShortVersionString CFBundleVersion; do
+    /usr/libexec/PlistBuddy -c "Set :$PLIST_KEY $APP_VERSION" "$APP_PLIST" 2>/dev/null \
+      || /usr/libexec/PlistBuddy -c "Add :$PLIST_KEY string $APP_VERSION" "$APP_PLIST"
+  done
+
+  echo "=== macOS 번들 재서명 (plist 수정 반영) ==="
+  if [[ -n "$MACOS_SIGN_IDENTITY" ]]; then
+    CODESIGN_ARGS=(--force --deep --sign "$MACOS_SIGN_IDENTITY")
+    if [[ -n "$MACOS_ENTITLEMENTS_FILE" ]]; then
+      CODESIGN_ARGS+=(--entitlements "$MACOS_ENTITLEMENTS_FILE")
+    fi
+    codesign "${CODESIGN_ARGS[@]}" "$TMP_DIST/$APP_NAME.app"
+  else
+    codesign --force --deep --sign - "$TMP_DIST/$APP_NAME.app"
+  fi
+
   echo "=== macOS 번들 검증 ==="
   codesign --verify --deep --strict "$TMP_DIST/$APP_NAME.app"
 
