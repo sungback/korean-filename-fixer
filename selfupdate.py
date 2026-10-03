@@ -137,16 +137,6 @@ def cleanup_staging(path: str):
     shutil.rmtree(path, ignore_errors=True)
 
 
-def batch_text_encoding() -> str:
-    """배치 파일 쓰기 인코딩을 반환한다.
-
-    cmd는 배치를 ANSI 코드페이지로 해석하므로 Windows에서는 mbcs
-    (한글 윈도우=cp949), 그 외 플랫폼(테스트용)에서는 utf-8을 쓴다.
-    ascii 경로라면 어느 쪽도 바이트가 동일하다.
-    """
-    return "mbcs" if os.name == "nt" else "utf-8"
-
-
 def same_drive(path_a: str, path_b: str) -> bool:
     """두 경로가 같은 드라이브(볼륨)에 있으면 True.
 
@@ -175,6 +165,8 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
     wait_path = batch_path + ".tasks"
     lines = [
         "@echo off",
+        "chcp 65001 >nul",
+        "rem UTF-8 배치: 이후 줄은 UTF-8로 해석된다 (로캘 무관).",
         "setlocal",
         f'set "KFF_PID={pid}"',
         f'set "KFF_IMAGE={ntpath.basename(exe_path)}"',
@@ -198,7 +190,8 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
         "set /a KFF_TRIES+=1",
         "rem 최대 3분 대기 후에는 진행한다. 잠겨 있으면 move 실패→안전 종료된다.",
         "if %KFF_TRIES% GEQ 180 goto waitcap",
-        "timeout /t 1 /nobreak >nul",
+        "rem timeout은 stdin이 없을 때(윈도우 앱·CI) 즉시 실패하므로 ping으로 대기한다.",
+        "ping -n 2 127.0.0.1 >nul",
         "goto waitloop",
         "",
         ":swapwait",
@@ -220,7 +213,7 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
         "for /L %%i in (1,1,3) do (",
         '  if exist "%KFF_CURRENT%" move "%KFF_CURRENT%" "%KFF_BAK%" >nul 2>&1',
         '  if not exist "%KFF_CURRENT%" goto moved_aside',
-        "  timeout /t 2 /nobreak >nul",
+        "  ping -n 3 127.0.0.1 >nul",
         ")",
         ":moved_aside",
         'if exist "%KFF_CURRENT%" echo [%DATE% %TIME%] move-aside failed >> "%KFF_LOG%"',
@@ -229,7 +222,7 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
         "for /L %%i in (1,1,3) do (",
         '  if not exist "%KFF_NEW_EXE%" move "%KFF_NEW%" "%KFF_CURRENT%" >nul 2>&1',
         '  if exist "%KFF_NEW_EXE%" goto moved_in',
-        "  timeout /t 2 /nobreak >nul",
+        "  ping -n 3 127.0.0.1 >nul",
         ")",
         ":moved_in",
         'if not exist "%KFF_NEW_EXE%" echo [%DATE% %TIME%] move-in failed >> "%KFF_LOG%"',
@@ -257,14 +250,14 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
         "for /L %%i in (1,1,3) do (",
         '  if not exist "%KFF_CURRENT%" goto restore_bak',
         '  rmdir /s /q "%KFF_CURRENT%" 2>nul',
-        "  timeout /t 2 /nobreak >nul",
+        "  ping -n 3 127.0.0.1 >nul",
         ")",
         ":restore_bak",
         "for /L %%i in (1,1,3) do (",
         '  if exist "%KFF_NEW_EXE%" goto rollback_done',
         '  if exist "%KFF_BAK%" move "%KFF_BAK%" "%KFF_CURRENT%" >nul 2>&1',
         '  if exist "%KFF_NEW_EXE%" goto rollback_done',
-        "  timeout /t 2 /nobreak >nul",
+        "  ping -n 3 127.0.0.1 >nul",
         ")",
         ":rollback_done",
         'if exist "%KFF_NEW_EXE%" echo [%DATE% %TIME%] rollback-ok exe restored >> "%KFF_LOG%"',
@@ -276,7 +269,7 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
     parent = os.path.dirname(batch_path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    with open(batch_path, "w", encoding=batch_text_encoding(), newline="") as f:
+    with open(batch_path, "w", encoding="utf-8", newline="") as f:
         f.write(content)
     return batch_path
 
