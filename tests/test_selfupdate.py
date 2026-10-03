@@ -256,7 +256,7 @@ class BatchTests(unittest.TestCase):
             with open(batch_path, encoding="utf-8") as f:
                 content = f.read()
 
-        self.assertIn("for /L %%i in (1,1,5)", content)
+        self.assertIn("for /L %%i in (1,1,15)", content)
         self.assertIn("KFF_NEW_EXE", content)
         self.assertIn("move-aside failed", content)
         self.assertIn("move-in failed", content)

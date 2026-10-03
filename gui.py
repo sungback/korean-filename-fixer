@@ -1296,8 +1296,10 @@ class App(_AppBase):
             subprocess.Popen(
                 ["cmd", "/c", batch_path],
                 cwd=tempfile.gettempdir(),
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                close_fds=True,
                 creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
             )
         except Exception as e:
