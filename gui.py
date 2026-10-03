@@ -149,7 +149,7 @@ class App(_AppBase):
             ) from _TKINTER_IMPORT_ERROR
 
         super().__init__()
-        self.title("Korean Filename Fixer3")
+        self.title(f"Korean Filename Fixer {APP_VERSION}")
         self.resizable(True, True)
         self.configure(padx=16, pady=16)
 
