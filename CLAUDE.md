@@ -19,7 +19,10 @@ macOS에서 한글 파일명을 NFD → NFC로 변환해 Windows/Linux와의 호
 | `watcher.py` | 실시간 폴더 감시 (NFDHandler, FolderWatcher) |
 | `gui.py` | tkinter GUI, 트레이 아이콘, 설정 저장 |
 | `autostart.py` | 로그인 시 자동 시작 등록/해제 (LaunchAgent / 레지스트리) |
-| `tests/` | pytest 테스트 스위트 (test_converter, test_watcher, test_gui, test_autostart) |
+| `updater.py` | GitHub 최신 릴리스 확인 (버전 비교, 캐시 간격) |
+| `selfupdate.py` | 인앱 자체 업데이트 (다운로드·sha256 검증, Windows 배치 / macOS bash 스왑 스크립트 생성) |
+| `version.py` | `APP_VERSION` 단일 출처 (릴리스 태그와 동일 값) |
+| `tests/` | pytest 테스트 스위트 (test_converter, test_watcher, test_gui, test_autostart, test_updater, test_selfupdate) |
 | `scripts/smoke_google_drive.py` | Google Drive 실폴더 수동 스모크 테스트 |
 | `docs/macos-signing-notarization.md` | macOS Developer ID 서명·공증 준비 문서 |
 
@@ -44,6 +47,10 @@ bash build.sh
 - **경로 정규화**: FSEventsObserver가 경로를 NFC로 반환할 수 있어 `os.scandir`로 실제 NFD 경로를 재탐색
 - **변환 취소**: `stop_event`(threading.Event)를 `convert_file` → DriveFS 대기 루프까지 전달, watcher 종료 시 즉시 중단
 - **DriveFS 컨텍스트 캐시**: `mirror_sqlite.db` 스캔 결과를 TTL 30s로 캐싱해 반복 I/O 방지 (`DRIVEFS_CONTEXTS_TTL`)
+- **Windows 자체 업데이트**: 실행 중인 앱이 배치(`kff_self_update.bat`)를 만들어 실행 → 앱 종료 대기 → 설치 폴더를 `.bak`으로 move → 새 폴더 move-in → 재실행. 로그는 `%TEMP%\kff_self_update.bat.log`
+  - 설치 폴더 잠금 방지: `Popen`에 `cwd=TEMP`, `stdin=DEVNULL`, `close_fds=True`, 배치 첫머리 `cd /d "%TEMP%"`, 재실행은 `start /d`
+  - move는 최대 15회 재시도, 실패 시 현행본은 건드리지 않고 롤백
+  - 업데이트 배치는 **구동 중인 옛 버전이 생성**하므로 업데이터 버그 수정은 다음 업데이트부터 적용됨 (v1.16.10 이하는 자동 업데이트 불가, 수동 설치 필요)
 
 ## 배포 (GitHub Actions)
 `v*` 태그 푸시 시 macOS/Windows 자동 빌드 및 GitHub Release 생성 (`.github/workflows/build.yml`)
@@ -52,8 +59,10 @@ bash build.sh
 git tag vX.X.X && git push origin main && git push origin vX.X.X
 ```
 
-- 태그 규칙: `v{major}.{minor}.{patch}` — 최신 `v1.16.10`
+- 태그 규칙: `v{major}.{minor}.{patch}` — 최신 `v1.16.13`
 - 기능 추가: minor 버전 업, 버그 수정/리팩토링: patch 버전 업
+- **릴리스 태그와 `version.py`의 `APP_VERSION`은 항상 같은 값으로 함께 bump**
+- **창 제목은 `APP_VERSION`을 그대로 표시하므로 릴리스마다 제목을 손으로 바꾸지 않는다**
 - **소스 기능 변경이 없을 때(문서, 설정 등)는 태그 없이 push만**
 
 ## 대화 관리
