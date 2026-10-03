@@ -3,7 +3,7 @@ import queue
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from converter import ConvertResult
 from gui import App
@@ -667,6 +667,166 @@ class UpdateCheckTests(unittest.TestCase):
 
         app._on_update_check_done.assert_called_once_with(
             True, "v9.9.9", "https://example.com/r", False)
+
+
+class UpdateDownloadTests(unittest.TestCase):
+    def make_download_app(self, extra_attrs=None):
+        app = object.__new__(App)
+        app._cmd_queue = queue.Queue()
+        app.after = Mock(side_effect=AssertionError("worker must not call Tk"))
+        app.status_var = Mock()
+        app.btn_update = Mock()
+        app._log = Mock()
+        app._quit_app = Mock()
+        if extra_attrs:
+            for k, v in extra_attrs.items():
+                setattr(app, k, v)
+        return app
+
+    def test_run_update_download_queues_failed_when_no_target(self):
+        app = self.make_download_app()
+
+        with patch("gui.App._self_update_target", return_value=None):
+            app._run_update_download("v9.9.9")
+
+        action, reason = app._cmd_queue.get_nowait()
+        self.assertEqual(action, "update_download_failed")
+        self.assertIn("설치 위치", reason)
+        app.after.assert_not_called()
+
+    def test_run_update_download_queues_failed_on_checksum_mismatch(self):
+        app = self.make_download_app()
+
+        with patch("gui.App._self_update_target",
+                   return_value=("/install", "/install/app.exe")):
+            with patch("gui.download_update", return_value="/tmp/staging/a.zip"):
+                with patch("gui.fetch_text", return_value="badhash  a.zip"):
+                    with patch("gui.verify_sha256", return_value=False):
+                        app._run_update_download("v9.9.9")
+
+        action, reason = app._cmd_queue.get_nowait()
+        self.assertEqual(action, "update_download_failed")
+        self.assertIn("체크섬", reason)
+        app.after.assert_not_called()
+
+    def test_run_update_download_queues_done_when_verified(self):
+        app = self.make_download_app()
+
+        with patch("gui.App._self_update_target",
+                   return_value=("/install", "/install/app.exe")):
+            with patch("gui.staging_dir", return_value="/tmp/staging"):
+                with patch("gui.download_update", return_value="/tmp/staging/a.zip"):
+                    with patch("gui.fetch_text", return_value="good  a.zip"):
+                        with patch("gui.verify_sha256", return_value=True):
+                            with patch("gui.extract_update", return_value="/tmp/staging/app"):
+                                app._run_update_download("v9.9.9")
+
+        self.assertEqual(
+            app._cmd_queue.get_nowait(),
+            ("update_download_done", "v9.9.9", "/tmp/staging/app",
+             "/install", "/tmp/staging"),
+        )
+        app.after.assert_not_called()
+
+    def test_on_update_download_progress_shows_megabytes(self):
+        app = self.make_download_app()
+
+        app._on_update_download_progress(2097152, 4194304)
+
+        status = app.status_var.set.call_args.args[0]
+        self.assertIn("2.0/4.0 MB", status)
+
+    def test_on_update_download_failed_sets_status_and_enables_button(self):
+        app = self.make_download_app()
+        app._update_check_in_progress = True
+
+        app._on_update_download_failed("다운로드 실패: boom")
+
+        self.assertFalse(app._update_check_in_progress)
+        app.btn_update.config.assert_called_with(state="normal")
+        self.assertIn("boom", app.status_var.set.call_args.args[0])
+
+    def test_on_update_download_done_cancels_and_cleans_up_when_declined(self):
+        app = self.make_download_app()
+        app._update_check_in_progress = True
+
+        with patch("gui.App._self_update_target",
+                   return_value=("/install", "/install/app.exe")):
+            with patch("gui.messagebox.askyesno", return_value=False):
+                with patch("gui.cleanup_staging") as cleanup:
+                    app._on_update_download_done("v9.9.9", "/new", "/install", "/staging")
+
+        cleanup.assert_called_once_with("/staging")
+        self.assertIn("취소", app.status_var.set.call_args.args[0])
+
+    def test_on_update_download_done_writes_batch_and_quits_when_accepted(self):
+        app = self.make_download_app()
+        app._update_check_in_progress = True
+
+        with patch("gui.App._self_update_target",
+                   return_value=("/install", "/install/app.exe")):
+            with patch("gui.messagebox.askyesno", return_value=True):
+                with patch("gui.write_update_batch") as write_batch:
+                    with patch("gui.subprocess") as subprocess_mock:
+                        app._on_update_download_done(
+                            "v9.9.9", "/new", "/install", "/staging")
+
+        write_batch.assert_called_once()
+        args, _kwargs = write_batch.call_args
+        self.assertEqual(args[2], "/install")
+        self.assertEqual(args[3], "/new")
+        subprocess_mock.Popen.assert_called_once()
+        app._quit_app.assert_called_once()
+
+    def test_on_update_check_done_offers_auto_install_on_windows(self):
+        app = self.make_download_app()
+        app._update_check_in_progress = True
+        app._start_update_download = Mock()
+
+        with patch("gui.messagebox.askyesnocancel", return_value=True) as ask:
+            with patch("gui.webbrowser.open") as open_browser:
+                with patch("gui.App._can_self_update", return_value=True):
+                    app._on_update_check_done(
+                        True, "v9.9.9", "https://example.com/r", False)
+
+        ask.assert_called_once()
+        app._start_update_download.assert_called_once_with("v9.9.9")
+        open_browser.assert_not_called()
+
+    def test_on_update_check_done_opens_page_when_auto_install_declined(self):
+        app = self.make_download_app()
+        app._update_check_in_progress = True
+        app._start_update_download = Mock()
+
+        with patch("gui.messagebox.askyesnocancel", return_value=False):
+            with patch("gui.webbrowser.open") as open_browser:
+                with patch("gui.App._can_self_update", return_value=True):
+                    app._on_update_check_done(
+                        True, "v9.9.9", "https://example.com/r", False)
+
+        app._start_update_download.assert_not_called()
+        open_browser.assert_called_once_with("https://example.com/r")
+
+    def test_poll_queue_dispatches_update_download_commands(self):
+        app = object.__new__(App)
+        app._queue = queue.Queue()
+        app._cmd_queue = queue.Queue()
+        app._poll_after_id = None
+        app._shutting_down = False
+        app.after = Mock(return_value="after-id")
+        app._log_result = Mock()
+        app._on_update_download_done = Mock()
+        app._on_update_download_failed = Mock()
+        app._on_update_download_progress = Mock()
+        app._cmd_queue.put(("update_download_progress", 100, 200))
+        app._cmd_queue.put(("update_download_done", "v9", "/new", "/i", "/s"))
+        app._cmd_queue.put(("update_download_failed", "boom"))
+
+        app._poll_queue()
+
+        app._on_update_download_progress.assert_called_once_with(100, 200)
+        app._on_update_download_done.assert_called_once_with("v9", "/new", "/i", "/s")
+        app._on_update_download_failed.assert_called_once_with("boom")
 
 
 if __name__ == "__main__":

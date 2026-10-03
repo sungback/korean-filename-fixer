@@ -13,6 +13,7 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
@@ -107,6 +108,23 @@ from updater import (
     fetch_latest_release,
     is_newer,
     should_check,
+)
+from selfupdate import (
+    UPDATE_BATCH_NAME,
+    WINDOWS_ZIP_NAME,
+    checksum_url,
+    cleanup_staging,
+    current_exe_path,
+    current_install_dir,
+    download_update,
+    extract_update,
+    fetch_text,
+    is_writable_dir,
+    parse_checksum,
+    release_asset_url,
+    staging_dir,
+    verify_sha256,
+    write_update_batch,
 )
 
 
@@ -1099,8 +1117,16 @@ class App(_AppBase):
         if has_update and tag:
             msg = f"새 버전 {tag} 사용 가능 (현재 {APP_VERSION})"
             self.status_var.set(msg)
-            self._log(f"{msg} — 다운로드 페이지에서 직접 설치하세요.", "info")
-            if messagebox.askyesno("업데이트", f"{msg}\n다운로드 페이지를 여시겠습니까?"):
+            self._log(msg, "info")
+            if self._can_self_update():
+                choice = messagebox.askyesnocancel(
+                    "업데이트",
+                    f"{msg}\n예: 다운로드 후 자동 설치\n아니오: 다운로드 페이지 열기")
+                if choice is True:
+                    self._start_update_download(tag)
+                elif choice is False:
+                    webbrowser.open(url)
+            elif messagebox.askyesno("업데이트", f"{msg}\n다운로드 페이지를 여시겠습니까?"):
                 webbrowser.open(url)
         elif manual:
             if tag:
@@ -1112,6 +1138,122 @@ class App(_AppBase):
                 self.status_var.set("업데이트 확인 실패")
         elif not tag:
             logging.warning("자동 업데이트 확인 실패")
+
+    @staticmethod
+    def _self_update_target():
+        """자동 교체 가능하면 (install_dir, exe_path), 아니면 None."""
+        if sys.platform != "win32":
+            return None
+        install_dir = current_install_dir()
+        if not install_dir:
+            return None
+        exe_path = current_exe_path(install_dir)
+        if not os.path.isfile(exe_path) or not is_writable_dir(install_dir):
+            return None
+        return (install_dir, exe_path)
+
+    def _can_self_update(self) -> bool:
+        return self._self_update_target() is not None
+
+    def _start_update_download(self, tag: str):
+        self._update_check_in_progress = True
+        self.btn_update.config(state="disabled")
+        self.status_var.set(f"업데이트 다운로드 중... ({tag})")
+        threading.Thread(
+            target=self._run_update_download,
+            args=(tag,),
+            daemon=True,
+        ).start()
+
+    def _download_progress_callback(self):
+        def callback(progress):
+            downloaded, total = progress
+            self._cmd_queue.put(("update_download_progress", downloaded, total))
+        return callback
+
+    def _run_update_download(self, tag: str):
+        """백그라운드에서 zip+sha를 내려받아 검증·압축해제한다."""
+        target = self._self_update_target()
+        if target is None:
+            self._cmd_queue.put(
+                ("update_download_failed", "교체할 설치 위치를 찾을 수 없습니다."))
+            return
+        _install_dir, _exe_path = target
+        asset_url = release_asset_url(GITHUB_REPO, tag)
+        staging = staging_dir()
+        try:
+            zip_path = os.path.join(staging, WINDOWS_ZIP_NAME)
+            download_update(asset_url, zip_path,
+                            progress_callback=self._download_progress_callback())
+            checksum_text = fetch_text(checksum_url(asset_url))
+            if not verify_sha256(zip_path, parse_checksum(checksum_text or "")):
+                self._cmd_queue.put(
+                    ("update_download_failed",
+                     "다운로드 검증 실패(체크섬 불일치). 다시 시도하세요."))
+                return
+            new_dir = extract_update(zip_path, staging)
+            self._cmd_queue.put(
+                ("update_download_done", tag, new_dir, _install_dir, staging))
+        except Exception as e:
+            cleanup_staging(staging)
+            self._cmd_queue.put(("update_download_failed", f"다운로드 실패: {e}"))
+
+    def _on_update_download_progress(self, downloaded: int, total):
+        if total:
+            self.status_var.set(
+                "업데이트 다운로드 중... "
+                f"{downloaded / 1048576:.1f}/{total / 1048576:.1f} MB")
+        else:
+            self.status_var.set(
+                f"업데이트 다운로드 중... {downloaded / 1048576:.1f} MB")
+
+    def _on_update_download_done(self, tag: str, new_dir: str,
+                                 install_dir: str, staging: str):
+        self._update_check_in_progress = False
+        self.btn_update.config(state="normal")
+        target = self._self_update_target()
+        if target is None:
+            cleanup_staging(staging)
+            self.status_var.set("업데이트 설치 실패: 설치 위치 확인 불가")
+            return
+        _install_dir, exe_path = target
+        if not messagebox.askyesno(
+                "업데이트", f"{tag} 다운로드 완료. 지금 종료하고 설치하시겠습니까?"):
+            cleanup_staging(staging)
+            self.status_var.set("업데이트 설치 취소됨")
+            return
+        zip_path = os.path.join(staging, WINDOWS_ZIP_NAME)
+        batch_path = os.path.join(tempfile.gettempdir(), UPDATE_BATCH_NAME)
+        try:
+            write_update_batch(batch_path, os.getpid(), install_dir,
+                               new_dir, exe_path,
+                               cleanup_paths=[zip_path, staging])
+        except Exception as e:
+            cleanup_staging(staging)
+            messagebox.showwarning("업데이트", f"설치 준비 실패: {e}")
+            return
+        self._log(f"업데이트 설치 시작: {tag} — 앱을 종료하고 교체합니다.", "info")
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(
+                    ["cmd", "/c", batch_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
+                )
+            else:
+                subprocess.Popen([batch_path])
+        except Exception as e:
+            cleanup_staging(staging)
+            self._log(f"업데이트 설치 실행 실패: {e}", "error")
+            return
+        self._quit_app()
+
+    def _on_update_download_failed(self, reason: str):
+        self._update_check_in_progress = False
+        self.btn_update.config(state="normal")
+        self.status_var.set(f"업데이트 실패: {reason}")
+        self._log(f"업데이트 실패: {reason}", "error")
 
     # ─── 로그 출력 ────────────────────────────────────────────
 
@@ -1136,6 +1278,12 @@ class App(_AppBase):
                 self._on_batch_failed(*args)
             elif action == "update_check_done":
                 self._on_update_check_done(*args)
+            elif action == "update_download_progress":
+                self._on_update_download_progress(*args)
+            elif action == "update_download_done":
+                self._on_update_download_done(*args)
+            elif action == "update_download_failed":
+                self._on_update_download_failed(*args)
             return
 
         if cmd == "start":

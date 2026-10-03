@@ -34,3 +34,42 @@ GitHub Releases API로 최신 버전을 확인하고, 새 버전이 있으면 �
 
 - 자동 다운로드·설치·재시작 (C안, 서명·공증 선행 필요)
 - Homebrew Cask (별도 검토)
+
+---
+
+# C-1안: Windows 배치 도우미 자동 교체 — 작업 목록
+
+실행 중 잠금 때문에 앱 본체가 아닌 `%TEMP%` 배치 스크립트가 종료 후 교체한다.
+교체 단위는 exe 1개가 아니라 onedir 폴더(`KoreanFilenameFixer/`) 전체다. Windows 전용.
+
+## 전제·제약
+
+- 설치 위치가 사용자 쓰기 가능해야 함 (Program Files면 사전 체크에서 실패 안내)
+- 백신 오탐 가능성 감수 (자기 교체+배치는 흔한 휴리스틱 대상)
+- macOS는 기존 브라우저 다운로드 유지 (범위 밖)
+
+## 구현
+
+- [x] 워크플로(`build.yml`): 릴리스 에셋에 `.sha256` 추가, zip 파일명 고정 유지
+- [x] `selfupdate.py` 신규 (표준라이브러리만)
+  - [x] 에셋 URL 해결: `releases/latest/download/KoreanFilenameFixer-Windows.zip`
+  - [x] `download_update()`: `urllib` + 진행률 콜백(상태바 표시용)
+  - [x] `verify_sha256()`: `.sha256` 대조, 불일치 시 설치 중단·임시파일 삭제
+  - [x] `write_update_batch()`: 종료 대기→`.bak` 회전→스왑→재실행→자기 삭제 배치 생성
+  - [x] 교체 실패 시 `.bak` 복원 로직 포함
+- [x] `gui.py` 연동 (워커→`_cmd_queue`→`after` 패턴 준수)
+  - [x] 업데이트 팝업에 "다운로드 후 설치" 선택지 추가 (기존 "페이지 열기" 유지)
+  - [x] 다운로드 진행률 상태바 표시, 완료 후 최종 확인 → 배치 실행 → 앱 종료
+  - [x] 설치 위치 쓰기 가능 사전 체크, 불가 시 안내만
+- [x] `tests/test_selfupdate.py` 신규: 배치 내용 단언, sha 검증, URL 규칙 (OS 독립적)
+- [x] Windows CI에서 unittest 통과 확인 (배치 실행 테스트는 안 함, 내용 단언만)
+
+## 검증·릴리스
+
+- [x] `pytest` + `unittest discover` (양 OS)
+- [ ] Windows 실머신에서 구버전→신버전 교체 1회 수동 검증 (CI 불가 영역)
+- [ ] 기능 추가이므로 minor 버전 업 후 태그·푸시
+
+## 범위 밖
+
+- macOS 자동 교체, 델타 업데이트, `--onefile` 전환 (별도 검토)

@@ -49,19 +49,24 @@ jobs:
         run: |
           bash build.sh
           cp dist/KoreanFilenameFixer.app.zip ${{ matrix.zip_name }}
+          shasum -a 256 ${{ matrix.zip_name }} > ${{ matrix.zip_name }}.sha256
 
       - name: PyInstaller 빌드 (Windows)
         if: matrix.os == 'windows-latest'
         run: |
           bash build.sh
           Compress-Archive -Path "dist\KoreanFilenameFixer" -DestinationPath ${{ matrix.zip_name }}
+          $hash = (Get-FileHash -Algorithm SHA256 ${{ matrix.zip_name }}).Hash
+          "$hash  ${{ matrix.zip_name }}" | Out-File -Encoding ascii "${{ matrix.zip_name }}.sha256"
         shell: pwsh
 
       - name: 빌드 결과 업로드
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.zip_name }}
-          path: ${{ matrix.zip_name }}
+          path: |
+            ${{ matrix.zip_name }}
+            ${{ matrix.zip_name }}.sha256
 
   release:
     needs: build
@@ -85,5 +90,7 @@ jobs:
         with:
           files: |
             KoreanFilenameFixer-macOS.zip
+            KoreanFilenameFixer-macOS.zip.sha256
             KoreanFilenameFixer-Windows.zip
+            KoreanFilenameFixer-Windows.zip.sha256
           generate_release_notes: true
