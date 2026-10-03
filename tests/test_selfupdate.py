@@ -279,6 +279,35 @@ class MacUpdateTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 extract_mac_app(zip_path, os.path.join(tmp, "staging"))
 
+    @unittest.skipUnless(sys.platform == "darwin", "ditto는 macOS에만 있음")
+    def test_extract_mac_app_preserves_symlinks(self):
+        import subprocess as sp
+        with tempfile.TemporaryDirectory() as tmp:
+            app_dir = os.path.join(tmp, "src", "KFF.app", "Contents")
+            os.makedirs(app_dir)
+            with open(os.path.join(app_dir, "real.dylib"), "w") as f:
+                f.write("x")
+            os.symlink("real.dylib", os.path.join(app_dir, "link.dylib"))
+            zip_path = os.path.join(tmp, MACOS_ZIP_NAME)
+            sp.run(
+                ["ditto", "-c", "-k", "--keepParent",
+                 os.path.join(tmp, "src", "KFF.app"), zip_path],
+                check=True,
+            )
+            result = extract_mac_app(zip_path, os.path.join(tmp, "staging"))
+            self.assertTrue(os.path.islink(os.path.join(result, "Contents", "link.dylib")))
+
+    def test_extract_mac_app_raises_when_ditto_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = os.path.join(tmp, MACOS_ZIP_NAME)
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("KFF.app/Contents/x", "x")
+            with patch("sys.platform", "darwin"):
+                with patch("selfupdate.subprocess.run") as run:
+                    run.return_value.returncode = 1
+                    with self.assertRaises(RuntimeError):
+                        extract_mac_app(zip_path, os.path.join(tmp, "staging"))
+
     def test_verify_bundle_calls_codesign_strict(self):
         with patch("selfupdate.subprocess.run") as run:
             run.return_value.returncode = 0

@@ -233,9 +233,24 @@ def current_macos_app() -> str | None:
 
 
 def extract_mac_app(zip_path: str, staging_dir: str) -> str:
-    """zip을 풀고 .app 번들 경로를 반환한다 (가장 얕은 것 우선)."""
-    with zipfile.ZipFile(zip_path) as archive:
-        archive.extractall(staging_dir)
+    """zip을 풀고 .app 번들 경로를 반환한다 (가장 얕은 것 우선).
+
+    Python zipfile은 심볼릭링크를 일반 파일로 풀어 서명을 깨뜨리므로,
+    macOS에서는 ditto로 풀어야 한다.
+    """
+    os.makedirs(staging_dir, exist_ok=True)
+    if sys.platform == "darwin":
+        result = subprocess.run(
+            ["ditto", "-x", "-k", zip_path, staging_dir],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=300,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"압축 해제 실패: {zip_path}")
+    else:
+        with zipfile.ZipFile(zip_path) as archive:
+            archive.extractall(staging_dir)
     candidates = []
     for root, dirs, _files in os.walk(staging_dir):
         for dirname in dirs:
