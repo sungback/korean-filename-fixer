@@ -68,7 +68,7 @@ GitHub Releases API로 최신 버전을 확인하고, 새 버전이 있으면 �
 
 - [x] `pytest` + `unittest discover` (양 OS)
 - [ ] Windows 실머신에서 구버전→신버전 교체 1회 수동 검증 (CI 불가 영역)
-- [ ] 기능 추가이므로 minor 버전 업 후 태그·푸시
+- [x] 기능 추가이므로 minor 버전 업 후 태그·푸시 (v1.15.0)
 
 ## 범위 밖
 
