@@ -1254,6 +1254,14 @@ class App(_AppBase):
     def _prepare_windows_swap(self, tag: str, new_dir: str, target,
                               staging: str) -> bool:
         _kind, install_dir, exe_path = target
+        staged_exe = os.path.join(new_dir, os.path.basename(exe_path))
+        if not os.path.isfile(staged_exe):
+            cleanup_staging(staging)
+            messagebox.showwarning(
+                "업데이트",
+                "다운로드한 파일이 사라졌습니다(백신 격리 가능). "
+                "백신 예외 등록 후 다시 시도하세요.")
+            return False
         zip_path = os.path.join(staging, WINDOWS_ZIP_NAME)
         batch_path = os.path.join(tempfile.gettempdir(), UPDATE_BATCH_NAME)
         try:

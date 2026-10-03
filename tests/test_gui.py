@@ -789,10 +789,11 @@ class UpdateDownloadTests(unittest.TestCase):
         with patch("gui.App._self_update_target",
                    return_value=("dir", "/install", "/install/app.exe")):
             with patch("gui.messagebox.askyesno", return_value=True):
-                with patch("gui.write_update_batch") as write_batch:
-                    with patch("gui.subprocess") as subprocess_mock:
-                        app._on_update_download_done(
-                            "v9.9.9", "dir", "/new", "/install", "/staging")
+                with patch("gui.os.path.isfile", return_value=True):
+                    with patch("gui.write_update_batch") as write_batch:
+                        with patch("gui.subprocess") as subprocess_mock:
+                            app._on_update_download_done(
+                                "v9.9.9", "dir", "/new", "/install", "/staging")
 
         write_batch.assert_called_once()
         args, _kwargs = write_batch.call_args
@@ -800,6 +801,23 @@ class UpdateDownloadTests(unittest.TestCase):
         self.assertEqual(args[3], "/new")
         subprocess_mock.Popen.assert_called_once()
         app._quit_app.assert_called_once()
+
+    def test_on_update_download_done_aborts_when_staged_exe_missing(self):
+        app = self.make_download_app()
+        app._update_check_in_progress = True
+
+        with patch("gui.App._self_update_target",
+                   return_value=("dir", "/install", "/install/app.exe")):
+            with patch("gui.messagebox.askyesno", return_value=True):
+                with patch("gui.os.path.isfile", return_value=False):
+                    with patch("gui.messagebox.showwarning") as warning:
+                        with patch("gui.write_update_batch") as write_batch:
+                            app._on_update_download_done(
+                                "v9.9.9", "dir", "/new", "/install", "/staging")
+
+        warning.assert_called_once()
+        write_batch.assert_not_called()
+        app._quit_app.assert_not_called()
 
     def test_on_update_download_done_writes_script_for_mac_target(self):
         app = self.make_download_app()

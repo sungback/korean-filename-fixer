@@ -239,6 +239,25 @@ class BatchTests(unittest.TestCase):
         self.assertIn("KFF_TRIES", content)
         self.assertIn("GEQ 180", content)
 
+    def test_batch_retries_moves_and_verifies_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            batch_path = os.path.join(tmp, "update.bat")
+            write_update_batch(
+                batch_path, 7,
+                r"C:\App\KoreanFilenameFixer",
+                r"C:\Temp\KFF_new\KoreanFilenameFixer",
+                r"C:\App\KoreanFilenameFixer\KoreanFilenameFixer.exe",
+            )
+            with open(batch_path, encoding="ascii") as f:
+                content = f.read()
+
+        self.assertIn("for /L %%i in (1,1,3)", content)
+        self.assertIn("KFF_NEW_EXE", content)
+        self.assertIn("move-aside failed", content)
+        self.assertIn("move-in failed", content)
+        self.assertIn("rollback-ok exe restored", content)
+        self.assertIn("rollback-FAILED", content)
+
 
 class MacUpdateTests(unittest.TestCase):
     def test_current_macos_app_is_none_when_not_frozen(self):
