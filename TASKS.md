@@ -85,5 +85,5 @@ Windows 배치와 같은 구조의 bash 도우미. zip 다운로드 → 옆에 �
 - [x] `gui.py` 플랫폼 분기 (mac 자동설치·검증·실행)
 - [x] mac 테스트 + 기존 테스트 형태 업데이트
 - [x] 가짜 번들로 실제 스왑 e2e 검증 (이 Mac에서 직접 실행)
-- [ ] `pytest` + `unittest discover` + `build.sh` + 앱 실행
-- [ ] 기능 추가이므로 minor 버전 업 후 태그·푸시 (`v1.16.0`)
+- [x] `pytest` + `unittest discover` + `build.sh` + 앱 실행
+- [x] 기능 추가이므로 minor 버전 업 후 태그·푸시 (`v1.16.0`)
