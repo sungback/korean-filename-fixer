@@ -248,11 +248,14 @@ class MacUpdateTests(unittest.TestCase):
 
     def test_current_macos_app_finds_bundle_ancestor(self):
         exe = "/Applications/KFF.app/Contents/MacOS/KFF"
+        expected = os.path.abspath(exe)
+        while not expected.endswith(".app"):
+            expected = os.path.dirname(expected)
         with patch("sys.platform", "darwin"):
             with patch.object(sys, "frozen", True, create=True):
                 with patch.object(sys, "executable", exe):
                     with patch("os.path.isdir", return_value=True):
-                        self.assertEqual(current_macos_app(), "/Applications/KFF.app")
+                        self.assertEqual(current_macos_app(), expected)
 
     def test_current_macos_app_is_none_off_darwin(self):
         with patch("sys.platform", "win32"):
