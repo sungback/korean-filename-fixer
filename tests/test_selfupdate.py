@@ -108,7 +108,9 @@ class InstallDirTests(unittest.TestCase):
     def test_current_install_dir_uses_executable_when_frozen(self):
         with patch.object(sys, "frozen", True, create=True):
             with patch.object(sys, "executable", "/x/y/app.exe"):
-                self.assertEqual(current_install_dir(), "/x/y")
+                self.assertEqual(
+                    current_install_dir(),
+                    os.path.dirname(os.path.abspath("/x/y/app.exe")))
 
     def test_current_exe_path_joins_exe_name(self):
         self.assertEqual(
