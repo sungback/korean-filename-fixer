@@ -240,27 +240,58 @@ class FolderWatcher:
     def __init__(self, callback: Callable):
         self.callback = callback
         self.exclude_patterns: list[str] = []
+        self._watched_folders: list[str] = []
         self._observer = None
         self._handler = None
         self._lock = threading.RLock()
 
+    @property
+    def watched_folders(self) -> list[str]:
+        with self._lock:
+            return list(self._watched_folders)
+
     def start(self, folder: str, exclude_patterns=None):
         """감시 시작. 이미 실행 중이면 중지 후 재시작한다."""
+        return self.start_many([folder], exclude_patterns)
+
+    def start_many(self, folders: list[str], exclude_patterns=None):
+        """여러 폴더를 하나의 Observer로 감시한다. 이미 실행 중이면 중지 후 재시작한다."""
         with self._lock:
             self.stop()
             self.exclude_patterns = clean_exclude_patterns(exclude_patterns)
+            # 순서 유지하며 중복 제거 (~/ 확장 + 절대경로 기준)
+            unique: list[str] = []
+            seen: set[str] = set()
+            for folder in folders or []:
+                if not folder:
+                    continue
+                normalized = os.path.abspath(os.path.expanduser(folder))
+                if normalized not in seen:
+                    seen.add(normalized)
+                    unique.append(normalized)
+            existing = [f for f in unique if os.path.isdir(f)]
+            missing = [f for f in unique if f not in existing]
+            for path in missing:
+                logging.warning(f"Watch skipped (not a directory): {path}")
+            if unique and not existing:
+                raise NotADirectoryError(f"감시할 폴더가 존재하지 않습니다: {unique[0]}")
             handler = NFDHandler(self.callback, self.exclude_patterns)
             self._observer = self._make_observer()
             self._handler = handler
+            scheduled: list[str] = []
             try:
-                self._observer.schedule(handler, folder, recursive=True)
+                for folder in existing:
+                    self._observer.schedule(handler, folder, recursive=True)
+                    scheduled.append(folder)
                 self._observer.start()
+                self._watched_folders = scheduled
             except Exception:
                 handler.close()
                 self._handler = None
                 self._observer = None
+                self._watched_folders = []
                 raise
-            logging.info(f"Watching: {folder} (exclude={self.exclude_patterns})")
+            logging.info(f"Watching: {scheduled} (exclude={self.exclude_patterns})")
 
     def stop(self):
         """감시를 중지하고 스레드를 정리한다."""
@@ -272,6 +303,7 @@ class FolderWatcher:
                 self._handler.close()
             self._observer = None
             self._handler = None
+            self._watched_folders = []
 
     @property
     def is_running(self) -> bool:

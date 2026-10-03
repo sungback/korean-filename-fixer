@@ -248,6 +248,30 @@ class FolderWatcherTests(unittest.TestCase):
         watcher.stop()  # should not raise
         self.assertFalse(watcher.is_running)
 
+    def test_start_many_watches_multiple_folders(self):
+        with tempfile.TemporaryDirectory() as tmp1:
+            with tempfile.TemporaryDirectory() as tmp2:
+                watcher = FolderWatcher(callback=lambda result: None)
+                watcher.start_many([tmp1, tmp2])
+                self.addCleanup(watcher.stop)
+                self.assertTrue(watcher.is_running)
+                self.assertEqual(len(watcher.watched_folders), 2)
+
+    def test_start_many_dedupes_folders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            watcher = FolderWatcher(callback=lambda result: None)
+            watcher.start_many([tmp, tmp])
+            self.addCleanup(watcher.stop)
+            self.assertEqual(len(watcher.watched_folders), 1)
+
+    def test_watched_folders_cleared_after_stop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            watcher = FolderWatcher(callback=lambda result: None)
+            watcher.start_many([tmp])
+            watcher.stop()
+            self.assertEqual(watcher.watched_folders, [])
+            self.assertFalse(watcher.is_running)
+
 
 if __name__ == "__main__":
     unittest.main()

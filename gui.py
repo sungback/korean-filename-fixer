@@ -124,6 +124,7 @@ class App(_AppBase):
         self._queue: queue.Queue = queue.Queue()
         self._cmd_queue: queue.Queue = queue.Queue()
         self.watcher = FolderWatcher(callback=self._queue.put)
+        self._folders: list[str] = []
         self._dark = self._is_dark_mode()
         self._poll_after_id = None
         self._health_check_after_id = None
@@ -209,25 +210,68 @@ class App(_AppBase):
         self._build_log_area()
 
     def _build_folder_row(self):
-        """감시 폴더 선택 행을 구성한다."""
+        """감시 폴더 목록 행을 구성한다."""
         frame = tk.Frame(self)
         frame.pack(fill="x", pady=(0, 10))
 
-        tk.Label(frame, text="감시 폴더:").pack(side="left")
+        tk.Label(frame, text="감시 폴더:").pack(side="left", anchor="n")
 
-        # 고정 너비 위젯을 먼저 오른쪽에 배치하고, Entry가 남은 공간을 채운다
+        # 고정 너비 위젯을 먼저 오른쪽에 배치하고, Listbox가 남은 공간을 채운다
         right_frame = tk.Frame(frame)
-        right_frame.pack(side="right")
+        right_frame.pack(side="right", anchor="n")
 
         self.remember_var = tk.BooleanVar(value=False)
         tk.Checkbutton(right_frame, text="기억", variable=self.remember_var,
-                       command=self._on_remember_toggle).pack(side="right")
-        self._button(right_frame, text="선택",
-                     command=self._choose_folder).pack(side="right", padx=(4, 0))
+                       command=self._on_remember_toggle).pack(side="top", anchor="e")
+        self._button(right_frame, text="추가",
+                     command=self._add_folder).pack(side="top", fill="x", pady=(4, 0))
+        self._button(right_frame, text="선택 삭제",
+                     command=self._remove_selected_folders).pack(side="top", fill="x", pady=(4, 0))
+        self._button(right_frame, text="전체 삭제",
+                     command=self._clear_folders).pack(side="top", fill="x", pady=(4, 0))
 
-        self.folder_var = tk.StringVar()
-        self.folder_entry = tk.Entry(frame, textvariable=self.folder_var, state="readonly")
-        self.folder_entry.pack(side="left", padx=(6, 4), fill="x", expand=True)
+        list_frame = tk.Frame(frame)
+        list_frame.pack(side="left", padx=(6, 4), fill="x", expand=True)
+        self.folder_listbox = tk.Listbox(list_frame, height=3, selectmode="extended")
+        self.folder_listbox.pack(side="left", fill="x", expand=True)
+        scrollbar = tk.Scrollbar(list_frame, orient="vertical",
+                                 command=self.folder_listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.folder_listbox.config(yscrollcommand=scrollbar.set)
+
+    def _normalize_folder(self, folder: str) -> str:
+        return os.path.abspath(os.path.expanduser(folder))
+
+    def _get_folders(self) -> list[str]:
+        return list(self.__dict__.get("_folders", []))
+
+    def _set_folders(self, folders: list[str], save: bool = False):
+        """중복 제거 후 내부 목록과 Listbox를 갱신한다."""
+        unique: list[str] = []
+        seen: set[str] = set()
+        for folder in folders or []:
+            if not folder:
+                continue
+            normalized = self._normalize_folder(folder)
+            if normalized not in seen:
+                seen.add(normalized)
+                unique.append(normalized)
+        self._folders = unique
+        self._refresh_folder_listbox()
+        if save:
+            remember = self.__dict__.get("remember_var")
+            if remember is not None and remember.get():
+                self._save_config()
+
+    def _refresh_folder_listbox(self):
+        if "folder_listbox" not in self.__dict__:
+            return
+        try:
+            self.folder_listbox.delete(0, "end")
+            for folder in self.__dict__.get("_folders", []):
+                self.folder_listbox.insert("end", folder)
+        except Exception:
+            pass
 
     def _build_exclude_row(self):
         """제외할 디렉터리 패턴 입력 행을 구성한다."""
@@ -359,7 +403,7 @@ class App(_AppBase):
     # ─── 설정 저장/불러오기 ───────────────────────────────────
 
     def _load_config(self):
-        """저장된 폴더 경로를 불러온다. 폴더가 실제로 존재할 때만 적용한다."""
+        """저장된 폴더 목록을 불러온다. 존재하는 폴더만 적용하고旧 단일 경로도 마이그레이션한다."""
         try:
             with open(CONFIG_PATH, encoding="utf-8") as f:
                 data = json.load(f)
@@ -370,36 +414,44 @@ class App(_AppBase):
             self.scan_on_startup_var.set(bool(data.get("scan_on_startup", True)))
             self.notify_on_convert_var.set(bool(data.get("notify_on_convert", True)))
             self._sync_autostart_state()
-            folder = data.get("folder", "")
-            if folder and os.path.isdir(folder):
-                self.folder_var.set(folder)
+            raw_folders = data.get("folders")
+            if raw_folders is None and data.get("folder"):
+                raw_folders = [data.get("folder")]
+            folders = [f for f in (raw_folders or []) if f and os.path.isdir(f)]
+            if folders:
+                self._set_folders(folders)
                 self.remember_var.set(True)
                 self.status_var.set("저장된 설정을 불러왔습니다.")
-                skip_reason = startup_scan_skip_reason(
-                    folder,
-                    self.scan_on_startup_var.get(),
-                    exclude_patterns,
-                )
-                if self.scan_on_startup_var.get() and not skip_reason:
-                    self._start_startup_scan(folder)
+                scan_targets: list[str] = []
+                for folder in self._get_folders():
+                    skip_reason = startup_scan_skip_reason(
+                        folder,
+                        self.scan_on_startup_var.get(),
+                        exclude_patterns,
+                    )
+                    if self.scan_on_startup_var.get() and not skip_reason:
+                        scan_targets.append(folder)
+                    else:
+                        if skip_reason:
+                            self._log(
+                                f"시작 시 자동 스캔 건너뜀 ({folder}): {skip_reason}",
+                                "info",
+                            )
+                if scan_targets:
+                    self._start_startup_scan(scan_targets)
                 else:
-                    if skip_reason:
+                    if self.scan_on_startup_var.get():
                         self.status_var.set("시작 시 자동 스캔 건너뜀 — 감시는 정상적으로 시작합니다.")
-                        self._log(
-                            f"시작 시 자동 스캔 건너뜀: {skip_reason} "
-                            "감시는 정상적으로 시작합니다. 필요하면 미리보기 후 수동 변환을 실행하세요.",
-                            "info",
-                        )
                     self._start_watch()
         except (FileNotFoundError, json.JSONDecodeError):
             self._sync_autostart_state()
 
     def _save_config(self):
-        """체크박스 ON이면 폴더 경로를 저장하고, OFF이면 config 파일을 삭제한다."""
-        if self.remember_var.get() and self.folder_var.get():
+        """체크박스 ON이면 폴더 목록을 저장하고, OFF이면 config 파일을 삭제한다."""
+        if self.remember_var.get() and self._get_folders():
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump({
-                    "folder": self.folder_var.get(),
+                    "folders": self._get_folders(),
                     "exclude_patterns": self._get_exclude_patterns(),
                     "scan_on_startup": self.scan_on_startup_var.get(),
                     "notify_on_convert": self.notify_on_convert_var.get(),
@@ -414,7 +466,7 @@ class App(_AppBase):
         self._save_config()
 
     def _on_scan_on_startup_toggle(self):
-        if self.remember_var.get() and self.folder_var.get():
+        if self.remember_var.get() and self._get_folders():
             self._save_config()
 
     def _sync_autostart_state(self):
@@ -452,7 +504,7 @@ class App(_AppBase):
                 self._log(f"로그인 시 자동 시작 해제 실패: {e}", "error")
 
     def _on_notify_toggle(self):
-        if self.remember_var.get() and self.folder_var.get():
+        if self.remember_var.get() and self._get_folders():
             self._save_config()
 
     @staticmethod
@@ -495,14 +547,14 @@ class App(_AppBase):
         if self.exclude_var.get().strip() != normalized:
             self.exclude_var.set(normalized)
 
-        if self.remember_var.get() and self.folder_var.get():
+        if self.remember_var.get() and self._get_folders():
             self._save_config()
 
         if self.watcher.is_running:
-            folder = self.folder_var.get()
+            folders = self._get_folders()
             try:
-                self.watcher.start(folder, self._get_exclude_patterns())
-                self.status_var.set(f"감시 중: {folder}")
+                self.watcher.start_many(folders, self._get_exclude_patterns())
+                self.status_var.set(self._watch_status_text())
                 self._log(f"제외 패턴 적용: {self._exclude_patterns_text()}", "info")
             except Exception as e:
                 self.status_var.set(f"제외 패턴 적용 실패: {e}")
@@ -525,14 +577,23 @@ class App(_AppBase):
         self.btn_preview.config(state="disabled" if running else "normal")
         self.btn_once.config(state="disabled" if running else "normal")
 
+    def _watch_status_text(self) -> str:
+        folders = self._get_folders()
+        if not folders:
+            return "폴더를 선택하세요."
+        if len(folders) == 1:
+            return f"감시 중: {folders[0]}"
+        return f"감시 중: {len(folders)}개 폴더"
+
     # ─── 폴더 선택 및 감시 제어 ──────────────────────────────
 
     def _setup_drop(self):
         if not _TKDND_AVAILABLE:
             return
         try:
-            self.folder_entry.drop_target_register(_tkdnd.DND_FILES)
-            self.folder_entry.dnd_bind("<<Drop>>", self._on_dnd_drop)
+            target = getattr(self, "folder_listbox", self)
+            target.drop_target_register(_tkdnd.DND_FILES)
+            target.dnd_bind("<<Drop>>", self._on_dnd_drop)
         except Exception as e:
             logging.warning(f"DnD 등록 실패: {e}")
 
@@ -543,40 +604,74 @@ class App(_AppBase):
         if os.path.isfile(path):
             path = os.path.dirname(path)
         if os.path.isdir(path):
-            self.folder_var.set(path)
-            self._log(f"폴더 선택 (드래그앤드롭): {path}", "info")
-            self.status_var.set("폴더가 선택되었습니다.")
-            if self.remember_var.get():
-                self._save_config()
+            self._add_folder_path(path, source="드래그앤드롭")
 
-    def _choose_folder(self):
+    def _add_folder_path(self, folder: str, source: str = "선택") -> bool:
+        normalized = self._normalize_folder(folder)
+        if normalized in self._get_folders():
+            self.status_var.set("이미 등록된 폴더입니다.")
+            return False
+        self._set_folders([*self._get_folders(), normalized])
+        self._log(f"폴더 추가 ({source}): {normalized}", "info")
+        self.status_var.set("폴더가 추가되었습니다.")
+        if self.remember_var.get():
+            self._save_config()
+        return True
+
+    def _add_folder(self):
         folder = filedialog.askdirectory(title="감시할 폴더를 선택하세요")
         if folder:
-            self.folder_var.set(folder)
-            self._log(f"폴더 선택: {folder}", "info")
-            self.status_var.set("폴더가 선택되었습니다.")
-            if self.remember_var.get():
-                self._save_config()
+            self._add_folder_path(folder)
+
+    def _choose_folder(self):
+        """기존 단일 선택 API 호환용 별칭."""
+        self._add_folder()
+
+    def _remove_selected_folders(self):
+        try:
+            selected = list(self.folder_listbox.curselection())
+        except Exception:
+            selected = []
+        if not selected:
+            self.status_var.set("삭제할 폴더를 목록에서 선택하세요.")
+            return
+        remaining = [f for i, f in enumerate(self._get_folders()) if i not in selected]
+        self._set_folders(remaining)
+        self._log(f"폴더 삭제: {len(selected)}개", "info")
+        if self.remember_var.get():
+            self._save_config()
+        if self.watcher.is_running:
+            self._start_watch()
+
+    def _clear_folders(self):
+        if not self._get_folders():
+            return
+        self._set_folders([])
+        self._log("감시 폴더 목록을 비웠습니다.", "info")
+        if self.remember_var.get():
+            self._save_config()
+        if self.watcher.is_running:
+            self._stop_watch()
 
     def _start_watch(self):
         if self._startup_scan_in_progress:
             self.status_var.set("시작 시 누락분 스캔 중입니다.")
             return
-        folder = self.folder_var.get()
-        if not folder:
-            self.status_var.set("먼저 폴더를 선택하세요.")
+        folders = self._get_folders()
+        if not folders:
+            self.status_var.set("먼저 폴더를 추가하세요.")
             return
         exclude_patterns = self._get_exclude_patterns()
         try:
-            self.watcher.start(folder, exclude_patterns)
+            self.watcher.start_many(folders, exclude_patterns)
         except Exception as e:
             self.status_var.set(f"감시 시작 실패: {e}")
             self._log(f"오류: {e}", "error")
             return
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
-        self.status_var.set(f"감시 중: {folder}")
-        self._log(f"감시를 시작했습니다. (제외: {self._exclude_patterns_text()})", "info")
+        self.status_var.set(self._watch_status_text())
+        self._log(f"감시를 시작했습니다: {len(folders)}개 폴더 (제외: {self._exclude_patterns_text()})", "info")
         self._update_tray_title(watching=True)
         self._update_tray_menu_state(watching=True)
 
@@ -597,41 +692,59 @@ class App(_AppBase):
 
     # ─── 일괄 변환 ────────────────────────────────────────────
 
-    def _start_startup_scan(self, folder: str):
-        """저장된 폴더가 있으면 앱 시작 직후 누락분을 한 번 정리한다."""
+    @staticmethod
+    def _as_folder_list(folders) -> list[str]:
+        if folders is None:
+            return []
+        if isinstance(folders, str):
+            return [folders] if folders else []
+        return list(folders)
+
+    def _start_startup_scan(self, folders):
+        """저장된 폴더들이 있으면 앱 시작 직후 누락분을 한 번 정리한다."""
+        folder_list = self._as_folder_list(folders)
+        if not folder_list:
+            self._start_watch()
+            return
         self._startup_scan_cancel_event = threading.Event()
         self._set_startup_scan_running(True)
-        self.status_var.set("시작 시 누락분 확인 중...")
-        self._log(f"시작 시 누락분 스캔 시작... (제외: {self._exclude_patterns_text()})", "info")
+        self.status_var.set(f"시작 시 누락분 확인 중... ({len(folder_list)}개 폴더)")
+        self._log(f"시작 시 누락분 스캔 시작... {len(folder_list)}개 폴더 (제외: {self._exclude_patterns_text()})", "info")
 
         exclude_patterns = self._get_exclude_patterns()
         threading.Thread(
             target=self._run_startup_scan,
-            args=(folder, exclude_patterns, self._startup_scan_cancel_event),
+            args=(folder_list, exclude_patterns, self._startup_scan_cancel_event),
             daemon=True,
         ).start()
 
     def _run_startup_scan(
         self,
-        folder: str,
+        folders,
         exclude_patterns: list[str],
         cancel_event: threading.Event,
     ):
         """백그라운드 스레드에서 시작 시 자동 스캔을 실행한다."""
+        folder_list = self._as_folder_list(folders)
         try:
-            results = convert_folder(
-                folder,
-                exclude_patterns=exclude_patterns,
-                include_root=True,
-                cancel_event=cancel_event,
-                progress_callback=self._progress_callback("시작 스캔"),
-            )
+            results: list = []
+            for index, folder in enumerate(folder_list, start=1):
+                if cancel_event.is_set():
+                    break
+                partial = convert_folder(
+                    folder,
+                    exclude_patterns=exclude_patterns,
+                    include_root=True,
+                    cancel_event=cancel_event,
+                    progress_callback=self._progress_callback(f"시작 스캔({index}/{len(folder_list)})"),
+                )
+                results.extend(partial)
             if cancel_event.is_set():
-                self._cmd_queue.put(("startup_scan_cancelled", results, folder))
+                self._cmd_queue.put(("startup_scan_cancelled", results, folder_list))
             else:
-                self._cmd_queue.put(("startup_scan_done", results, folder))
+                self._cmd_queue.put(("startup_scan_done", results, folder_list))
         except Exception as e:
-            self._cmd_queue.put(("startup_scan_failed", folder, str(e)))
+            self._cmd_queue.put(("startup_scan_failed", folder_list, str(e)))
 
     def _skip_startup_scan(self):
         """진행 중인 시작 자동 스캔에 안전한 중단 신호를 보낸다."""
@@ -644,16 +757,16 @@ class App(_AppBase):
         self._log("시작 시 누락분 스캔 건너뛰기 요청", "info")
 
     def _preview_once(self):
-        """폴더 전체를 스캔해 변환 예정 결과만 표시한다."""
+        """모든 감시 폴더를 스캔해 변환 예정 결과만 표시한다."""
         if self._startup_scan_in_progress:
             self.status_var.set("시작 시 누락분 스캔 중에는 실행할 수 없습니다.")
             return
-        folder = self.folder_var.get()
-        if not folder:
-            self.status_var.set("먼저 폴더를 선택하세요.")
+        folders = self._get_folders()
+        if not folders:
+            self.status_var.set("먼저 폴더를 추가하세요.")
             return
 
-        self.status_var.set("미리보기 중...")
+        self.status_var.set(f"미리보기 중... ({len(folders)}개 폴더)")
         self.btn_preview.config(state="disabled")
 
         was_watching = self.watcher.is_running
@@ -664,36 +777,39 @@ class App(_AppBase):
         exclude_patterns = self._get_exclude_patterns()
         threading.Thread(
             target=self._run_preview,
-            args=(folder, was_watching, exclude_patterns),
+            args=(folders, was_watching, exclude_patterns),
             daemon=True,
         ).start()
 
-    def _run_preview(self, folder: str, resume_watch: bool, exclude_patterns: list[str]):
+    def _run_preview(self, folders, resume_watch: bool, exclude_patterns: list[str]):
         """백그라운드 스레드에서 미리보기를 계산하고 결과를 메인 스레드에 전달한다."""
+        folder_list = self._as_folder_list(folders)
         try:
-            results = preview_folder(
-                folder,
-                exclude_patterns=exclude_patterns,
-                include_root=True,
-            )
-            self._cmd_queue.put(("preview_done", results, folder, resume_watch))
+            results: list = []
+            for folder in folder_list:
+                results.extend(preview_folder(
+                    folder,
+                    exclude_patterns=exclude_patterns,
+                    include_root=True,
+                ))
+            self._cmd_queue.put(("preview_done", results, folder_list, resume_watch))
         except Exception as e:
-            self._cmd_queue.put(("preview_failed", folder, resume_watch, str(e)))
+            self._cmd_queue.put(("preview_failed", folder_list, resume_watch, str(e)))
 
     def _convert_once(self):
-        """폴더 전체를 한 번 스캔해서 변환한다.
+        """모든 감시 폴더를 한 번 스캔해서 변환한다.
 
         감시 중이면 레이스 컨디션 방지를 위해 변환 동안 감시를 일시 중단한다.
         """
         if self._startup_scan_in_progress:
             self.status_var.set("시작 시 누락분 스캔 중에는 실행할 수 없습니다.")
             return
-        folder = self.folder_var.get()
-        if not folder:
-            self.status_var.set("먼저 폴더를 선택하세요.")
+        folders = self._get_folders()
+        if not folders:
+            self.status_var.set("먼저 폴더를 추가하세요.")
             return
 
-        self.status_var.set("변환 중...")
+        self.status_var.set(f"변환 중... ({len(folders)}개 폴더)")
         self.btn_once.config(state="disabled")
 
         was_watching = self.watcher.is_running
@@ -704,31 +820,70 @@ class App(_AppBase):
         exclude_patterns = self._get_exclude_patterns()
         threading.Thread(
             target=self._run_batch_convert,
-            args=(folder, was_watching, exclude_patterns),
+            args=(folders, was_watching, exclude_patterns),
             daemon=True,
         ).start()
 
-    def _run_batch_convert(self, folder: str, resume_watch: bool, exclude_patterns: list[str]):
+    def _run_batch_convert(self, folders, resume_watch: bool, exclude_patterns: list[str]):
         """백그라운드 스레드에서 일괄 변환을 실행하고 결과를 메인 스레드에 전달한다."""
+        folder_list = self._as_folder_list(folders)
         try:
-            results = convert_folder(
-                folder,
-                exclude_patterns=exclude_patterns,
-                include_root=True,
-                progress_callback=self._progress_callback("일괄 변환"),
-            )
-            self._cmd_queue.put(("batch_done", results, folder, resume_watch))
+            results: list = []
+            for index, folder in enumerate(folder_list, start=1):
+                partial = convert_folder(
+                    folder,
+                    exclude_patterns=exclude_patterns,
+                    include_root=True,
+                    progress_callback=self._progress_callback(f"일괄 변환({index}/{len(folder_list)})"),
+                )
+                results.extend(partial)
+            self._cmd_queue.put(("batch_done", results, folder_list, resume_watch))
         except Exception as e:
-            self._cmd_queue.put(("batch_failed", folder, resume_watch, str(e)))
+            self._cmd_queue.put(("batch_failed", folder_list, resume_watch, str(e)))
 
     def _sync_folder_after_conversion(self, folder: str, results: list) -> str:
         new_folder = folder_after_results(folder, results)
         if new_folder != folder:
-            self.folder_var.set(new_folder)
-            if self.remember_var.get():
-                self._save_config()
-            self._log(f"감시 폴더 경로 갱신: {new_folder}", "info")
+            folders = self._get_folders()
+            if folder in folders:
+                updated = [new_folder if f == folder else f for f in folders]
+                self._set_folders(updated)
+            remember = self.__dict__.get("remember_var")
+            if remember is not None and remember.get():
+                try:
+                    self._save_config()
+                except Exception:
+                    pass
+            try:
+                self._log(f"감시 폴더 경로 갱신: {new_folder}", "info")
+            except Exception:
+                pass
         return new_folder
+
+    def _sync_folders_after_conversion(self, folders, results: list) -> list[str]:
+        """루트 폴더 자체가 변환됐으면 새 경로로 목록을 갱신한다."""
+        folder_list = self._as_folder_list(folders)
+        current = self._get_folders() or folder_list
+        updated = list(current)
+        changed = False
+        for folder in folder_list:
+            new_folder = folder_after_results(folder, results)
+            if new_folder != folder and folder in updated:
+                updated = [new_folder if f == folder else f for f in updated]
+                try:
+                    self._log(f"감시 폴더 경로 갱신: {new_folder}", "info")
+                except Exception:
+                    pass
+                changed = True
+        if changed:
+            self._set_folders(updated)
+            remember = self.__dict__.get("remember_var")
+            if remember is not None and remember.get():
+                try:
+                    self._save_config()
+                except Exception:
+                    pass
+        return self._get_folders() or updated
 
     def _progress_callback(self, operation: str):
         def callback(progress):
@@ -736,7 +891,7 @@ class App(_AppBase):
             self._cmd_queue.put(("operation_progress", operation, phase, current, total))
         return callback
 
-    def _on_batch_done(self, results: list, folder: str, resume_watch: bool):
+    def _on_batch_done(self, results: list, folders, resume_watch: bool):
         """일괄 변환 완료 후 결과를 표시하고 필요하면 감시를 재개한다."""
         converted = [r for r in results if r.status == "converted"]
         conflicts = [r for r in results if r.status == "conflict"]
@@ -756,24 +911,24 @@ class App(_AppBase):
             self._send_notification("Korean Filename Fixer", summary)
         self.btn_once.config(state="normal")
 
-        folder = self._sync_folder_after_conversion(folder, results)
+        updated = self._sync_folders_after_conversion(folders, results)
         if resume_watch:
-            self._resume_watch(folder)
+            self._resume_watch(updated)
         else:
             self._watch_paused_for_operation = False
 
-    def _on_batch_failed(self, folder: str, resume_watch: bool, error: str):
+    def _on_batch_failed(self, folders, resume_watch: bool, error: str):
         """일괄 변환 실패 후 버튼 상태를 복구하고 필요하면 감시를 재개한다."""
         self.status_var.set(f"변환 실패: {error}")
         self._log(f"변환 실패: {error}", "error")
         self.btn_once.config(state="normal")
 
         if resume_watch:
-            self._resume_watch(folder)
+            self._resume_watch(folders)
         else:
             self._watch_paused_for_operation = False
 
-    def _on_preview_done(self, results: list, folder: str, resume_watch: bool):
+    def _on_preview_done(self, results: list, folders, resume_watch: bool):
         """미리보기 완료 후 결과를 표시하고 필요하면 감시를 재개한다."""
         previews = [r for r in results if r.status == "preview"]
         conflicts = [r for r in results if r.status == "conflict"]
@@ -790,22 +945,22 @@ class App(_AppBase):
         self.btn_preview.config(state="normal")
 
         if resume_watch:
-            self._resume_watch(folder)
+            self._resume_watch(folders)
         else:
             self._watch_paused_for_operation = False
 
-    def _on_preview_failed(self, folder: str, resume_watch: bool, error: str):
+    def _on_preview_failed(self, folders, resume_watch: bool, error: str):
         """미리보기 실패 후 버튼 상태를 복구하고 필요하면 감시를 재개한다."""
         self.status_var.set(f"미리보기 실패: {error}")
         self._log(f"미리보기 실패: {error}", "error")
         self.btn_preview.config(state="normal")
 
         if resume_watch:
-            self._resume_watch(folder)
+            self._resume_watch(folders)
         else:
             self._watch_paused_for_operation = False
 
-    def _on_startup_scan_done(self, results: list, folder: str):
+    def _on_startup_scan_done(self, results: list, folders):
         """시작 시 자동 스캔 완료 후 결과를 기록하고 감시를 시작한다."""
         converted = [r for r in results if r.status == "converted"]
         conflicts = [r for r in results if r.status == "conflict"]
@@ -824,10 +979,10 @@ class App(_AppBase):
         if converted and self.notify_on_convert_var.get():
             self._send_notification("Korean Filename Fixer", summary)
         self._set_startup_scan_running(False)
-        self._sync_folder_after_conversion(folder, results)
+        self._sync_folders_after_conversion(folders, results)
         self._start_watch()
 
-    def _on_startup_scan_cancelled(self, results: list, folder: str):
+    def _on_startup_scan_cancelled(self, results: list, folders):
         """시작 자동 스캔을 건너뛴 뒤 처리된 결과만 기록하고 감시를 시작한다."""
         converted = [r for r in results if r.status == "converted"]
         conflicts = [r for r in results if r.status == "conflict"]
@@ -844,23 +999,27 @@ class App(_AppBase):
         self.status_var.set(summary)
         self._log(summary, "info")
         self._set_startup_scan_running(False)
-        self._sync_folder_after_conversion(folder, results)
+        self._sync_folders_after_conversion(folders, results)
         self._start_watch()
 
-    def _on_startup_scan_failed(self, folder: str, error: str):
+    def _on_startup_scan_failed(self, folders, error: str):
         """시작 시 자동 스캔 실패 시에도 앱은 계속 실행하고 감시는 시작한다."""
         self.status_var.set(f"시작 시 누락분 스캔 실패: {error}")
         self._log(f"시작 시 누락분 스캔 실패: {error}", "error")
         self._set_startup_scan_running(False)
         self._start_watch()
 
-    def _resume_watch(self, folder: str):
+    def _resume_watch(self, folders=None):
         try:
-            self.watcher.start(folder, self._get_exclude_patterns())
+            targets = self._as_folder_list(folders) or self._get_folders()
+            if not targets:
+                self._watch_paused_for_operation = False
+                return
+            self.watcher.start_many(targets, self._get_exclude_patterns())
             self.btn_start.config(state="disabled")
             self.btn_stop.config(state="normal")
-            self.status_var.set(f"감시 중: {folder}")
-            self._log(f"감시 재개 (제외: {self._exclude_patterns_text()})", "info")
+            self.status_var.set(self._watch_status_text())
+            self._log(f"감시 재개: {len(targets)}개 폴더 (제외: {self._exclude_patterns_text()})", "info")
             self._update_tray_title(watching=True)
             self._update_tray_menu_state(watching=True)
         except Exception as e:
@@ -941,13 +1100,13 @@ class App(_AppBase):
             and not self._watch_paused_for_operation
             and not self.watcher.is_running
         ):
-            folder = self.folder_var.get()
+            folders = self._get_folders()
             self._log("감시 프로세스가 중단되어 자동으로 재시작합니다.", "error")
             if _APPKIT and hasattr(self, "_status_item"):
                 self._status_item.button().setTitle_("K!")
             try:
-                self.watcher.start(folder, self._get_exclude_patterns())
-                self.status_var.set(f"감시 중: {folder}")
+                self.watcher.start_many(folders, self._get_exclude_patterns())
+                self.status_var.set(self._watch_status_text())
                 self._log("감시 재시작 완료.", "info")
                 self._update_tray_title(watching=True)
                 self._update_tray_menu_state(watching=True)

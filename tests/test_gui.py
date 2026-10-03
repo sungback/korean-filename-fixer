@@ -33,7 +33,7 @@ class GuiTests(unittest.TestCase):
         app.scan_on_startup_var.get.return_value = True
         app.notify_on_convert_var = Mock()
         app.remember_var = Mock()
-        app.folder_var = Mock()
+        app._folders = []
         app.status_var = Mock()
         app._format_exclude_patterns = Mock(return_value=".git")
         app._sync_autostart_state = Mock()
@@ -54,10 +54,37 @@ class GuiTests(unittest.TestCase):
                     ):
                         app._load_config()
 
-        app.folder_var.set.assert_called_once_with("/Users/back/내 드라이브")
+        self.assertEqual(app._get_folders(), ["/Users/back/내 드라이브"])
         app._start_startup_scan.assert_not_called()
         app._start_watch.assert_called_once_with()
         app.status_var.set.assert_any_call("시작 시 자동 스캔 건너뜀 — 감시는 정상적으로 시작합니다.")
+
+    def test_load_config_migrates_folders_list(self):
+        app = object.__new__(App)
+        app.exclude_var = Mock()
+        app.scan_on_startup_var = Mock()
+        app.scan_on_startup_var.get.return_value = False
+        app.notify_on_convert_var = Mock()
+        app.remember_var = Mock()
+        app._folders = []
+        app.status_var = Mock()
+        app._format_exclude_patterns = Mock(return_value=".git")
+        app._sync_autostart_state = Mock()
+        app._start_startup_scan = Mock()
+        app._start_watch = Mock()
+        app._log = Mock()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = os.path.join(tmp, "config.json")
+            with open(config_path, "w", encoding="utf-8") as config:
+                config.write('{"folders": ["/tmp/a", "/tmp/b"]}')
+
+            with patch("gui.CONFIG_PATH", config_path):
+                with patch("gui.os.path.isdir", return_value=True):
+                    app._load_config()
+
+        self.assertEqual(app._get_folders(), ["/tmp/a", "/tmp/b"])
+        app._start_watch.assert_called_once_with()
 
     def test_run_preview_queues_completion_without_calling_tk_from_worker(self):
         app = self.make_worker_app()
@@ -68,7 +95,7 @@ class GuiTests(unittest.TestCase):
 
         self.assertEqual(
             app._cmd_queue.get_nowait(),
-            ("preview_done", results, "folder", True),
+            ("preview_done", results, ["folder"], True),
         )
         app.after.assert_not_called()
 
@@ -80,7 +107,7 @@ class GuiTests(unittest.TestCase):
 
         self.assertEqual(
             app._cmd_queue.get_nowait(),
-            ("preview_failed", "folder", True, "boom"),
+            ("preview_failed", ["folder"], True, "boom"),
         )
         app.after.assert_not_called()
 
@@ -94,7 +121,7 @@ class GuiTests(unittest.TestCase):
 
         self.assertEqual(
             app._cmd_queue.get_nowait(),
-            ("startup_scan_done", results, "folder"),
+            ("startup_scan_done", results, ["folder"]),
         )
         app.after.assert_not_called()
 
@@ -112,15 +139,15 @@ class GuiTests(unittest.TestCase):
 
         self.assertEqual(
             app._cmd_queue.get_nowait(),
-            ("operation_progress", "시작 스캔", "collect", 1200, None),
+            ("operation_progress", "시작 스캔(1/1)", "collect", 1200, None),
         )
         self.assertEqual(
             app._cmd_queue.get_nowait(),
-            ("operation_progress", "시작 스캔", "convert", 300, 1200),
+            ("operation_progress", "시작 스캔(1/1)", "convert", 300, 1200),
         )
         self.assertEqual(
             app._cmd_queue.get_nowait(),
-            ("startup_scan_done", [], "folder"),
+            ("startup_scan_done", [], ["folder"]),
         )
         app.after.assert_not_called()
 
@@ -138,7 +165,7 @@ class GuiTests(unittest.TestCase):
 
         self.assertEqual(
             app._cmd_queue.get_nowait(),
-            ("startup_scan_cancelled", results, "folder"),
+            ("startup_scan_cancelled", results, ["folder"]),
         )
         app.after.assert_not_called()
 
@@ -151,7 +178,7 @@ class GuiTests(unittest.TestCase):
 
         self.assertEqual(
             app._cmd_queue.get_nowait(),
-            ("startup_scan_failed", "folder", "boom"),
+            ("startup_scan_failed", ["folder"], "boom"),
         )
         app.after.assert_not_called()
 
@@ -164,7 +191,7 @@ class GuiTests(unittest.TestCase):
 
         self.assertEqual(
             app._cmd_queue.get_nowait(),
-            ("batch_done", results, "folder", True),
+            ("batch_done", results, ["folder"], True),
         )
         app.after.assert_not_called()
 
@@ -181,15 +208,15 @@ class GuiTests(unittest.TestCase):
 
         self.assertEqual(
             app._cmd_queue.get_nowait(),
-            ("operation_progress", "일괄 변환", "collect", 500, None),
+            ("operation_progress", "일괄 변환(1/1)", "collect", 500, None),
         )
         self.assertEqual(
             app._cmd_queue.get_nowait(),
-            ("operation_progress", "일괄 변환", "convert", 10, 500),
+            ("operation_progress", "일괄 변환(1/1)", "convert", 10, 500),
         )
         self.assertEqual(
             app._cmd_queue.get_nowait(),
-            ("batch_done", [], "folder", False),
+            ("batch_done", [], ["folder"], False),
         )
         app.after.assert_not_called()
 
@@ -201,7 +228,7 @@ class GuiTests(unittest.TestCase):
 
         self.assertEqual(
             app._cmd_queue.get_nowait(),
-            ("batch_failed", "folder", True, "boom"),
+            ("batch_failed", ["folder"], True, "boom"),
         )
         app.after.assert_not_called()
 
@@ -209,11 +236,11 @@ class GuiTests(unittest.TestCase):
         app = self.make_poll_app()
         app._on_preview_done = Mock()
         results = [object()]
-        app._cmd_queue.put(("preview_done", results, "folder", True))
+        app._cmd_queue.put(("preview_done", results, ["folder"], True))
 
         app._poll_queue()
 
-        app._on_preview_done.assert_called_once_with(results, "folder", True)
+        app._on_preview_done.assert_called_once_with(results, ["folder"], True)
         self.assertEqual(app._poll_after_id, "after-id")
 
     def test_poll_queue_dispatches_progress_commands(self):
@@ -248,8 +275,7 @@ class GuiTests(unittest.TestCase):
         app._startup_scan_in_progress = False
         app._watch_paused_for_operation = True
         app.btn_stop = {"state": "normal"}
-        app.folder_var = Mock()
-        app.folder_var.get.return_value = "/tmp/example"
+        app._folders = ["/tmp/example"]
         app._get_exclude_patterns = Mock(return_value=[])
         app.watcher = Mock()
         app.watcher.is_running = False
@@ -262,7 +288,7 @@ class GuiTests(unittest.TestCase):
         with patch("gui._APPKIT", False):
             app._health_check()
 
-        app.watcher.start.assert_not_called()
+        app.watcher.start_many.assert_not_called()
         self.assertEqual(app._health_check_after_id, "after-id")
 
     def test_button_options_keep_text_readable_in_dark_mode(self):
@@ -412,6 +438,8 @@ class CallbackTests(unittest.TestCase):
         app._log = Mock()
         app._resume_watch = Mock()
         app._sync_folder_after_conversion = Mock(side_effect=lambda f, r: f)
+        app._sync_folders_after_conversion = Mock(side_effect=lambda f, r: App._as_folder_list(f))
+        app._folders = []
         app.status_var = Mock()
         app.notify_on_convert_var = Mock()
         app._send_notification = Mock()
@@ -427,7 +455,7 @@ class CallbackTests(unittest.TestCase):
             ConvertResult("b", "b", "b", "conflict"),
         ]
 
-        app._on_batch_done(results, "/tmp/folder", resume_watch=False)
+        app._on_batch_done(results, ["/tmp/folder"], resume_watch=False)
 
         self.assertEqual(app._log_result.call_count, 2)
         app.btn_once.config.assert_called_with(state="normal")
@@ -437,19 +465,19 @@ class CallbackTests(unittest.TestCase):
 
     def test_on_batch_done_resumes_watch_when_flag_set(self):
         app = self._make_app({"btn_once": Mock()})
-        app._on_batch_done([], "/tmp/folder", resume_watch=True)
-        app._resume_watch.assert_called_once_with("/tmp/folder")
+        app._on_batch_done([], ["/tmp/folder"], resume_watch=True)
+        app._resume_watch.assert_called_once_with(["/tmp/folder"])
 
     def test_on_batch_done_clears_paused_flag_when_no_resume(self):
         app = self._make_app({"btn_once": Mock()})
         app._watch_paused_for_operation = True
-        app._on_batch_done([], "/tmp/folder", resume_watch=False)
+        app._on_batch_done([], ["/tmp/folder"], resume_watch=False)
         app._resume_watch.assert_not_called()
         self.assertFalse(app._watch_paused_for_operation)
 
     def test_on_batch_failed_sets_error_status_and_enables_button(self):
         app = self._make_app({"btn_once": Mock()})
-        app._on_batch_failed("/tmp/folder", resume_watch=False, error="디스크 오류")
+        app._on_batch_failed(["/tmp/folder"], resume_watch=False, error="디스크 오류")
         status = app.status_var.set.call_args.args[0]
         self.assertIn("디스크 오류", status)
         app.btn_once.config.assert_called_with(state="normal")
@@ -461,7 +489,7 @@ class CallbackTests(unittest.TestCase):
             ConvertResult("b", "b", "b", "skipped"),
         ]
 
-        app._on_preview_done(results, "/tmp/folder", resume_watch=False)
+        app._on_preview_done(results, ["/tmp/folder"], resume_watch=False)
 
         self.assertEqual(app._log_result.call_count, 2)
         app.btn_preview.config.assert_called_with(state="normal")
@@ -470,12 +498,12 @@ class CallbackTests(unittest.TestCase):
 
     def test_on_preview_done_resumes_watch_when_flag_set(self):
         app = self._make_app({"btn_preview": Mock()})
-        app._on_preview_done([], "/tmp/folder", resume_watch=True)
-        app._resume_watch.assert_called_once_with("/tmp/folder")
+        app._on_preview_done([], ["/tmp/folder"], resume_watch=True)
+        app._resume_watch.assert_called_once_with(["/tmp/folder"])
 
     def test_on_preview_failed_sets_error_status_and_enables_button(self):
         app = self._make_app({"btn_preview": Mock()})
-        app._on_preview_failed("/tmp/folder", resume_watch=False, error="권한 없음")
+        app._on_preview_failed(["/tmp/folder"], resume_watch=False, error="권한 없음")
         status = app.status_var.set.call_args.args[0]
         self.assertIn("권한 없음", status)
         app.btn_preview.config.assert_called_with(state="normal")
@@ -486,11 +514,11 @@ class CallbackTests(unittest.TestCase):
         app._start_watch = Mock()
         results = [ConvertResult("a", "a", "a", "converted")]
 
-        app._on_startup_scan_done(results, "/tmp/folder")
+        app._on_startup_scan_done(results, ["/tmp/folder"])
 
         self.assertEqual(app._log_result.call_count, 1)
         app._set_startup_scan_running.assert_called_once_with(False)
-        app._sync_folder_after_conversion.assert_called_once_with("/tmp/folder", results)
+        app._sync_folders_after_conversion.assert_called_once_with(["/tmp/folder"], results)
         app._start_watch.assert_called_once_with()
         status = app.status_var.set.call_args.args[0]
         self.assertIn("완료", status)
@@ -505,7 +533,7 @@ class CallbackTests(unittest.TestCase):
             ConvertResult("b", "b", "b", "skipped"),
         ]
 
-        app._on_startup_scan_cancelled(results, "folder")
+        app._on_startup_scan_cancelled(results, ["folder"])
 
         self.assertEqual(app._log_result.call_count, 2)
         app._log_result.assert_any_call(results[0], notify=False)
@@ -513,20 +541,20 @@ class CallbackTests(unittest.TestCase):
         app.status_var.set.assert_called_once()
         self.assertIn("건너뜀", app.status_var.set.call_args.args[0])
         app._set_startup_scan_running.assert_called_once_with(False)
-        app._sync_folder_after_conversion.assert_called_once_with("folder", results)
+        app._sync_folders_after_conversion.assert_called_once_with(["folder"], results)
         app._start_watch.assert_called_once_with()
 
     def test_on_startup_scan_cancelled_syncs_converted_root_before_starting_watch(self):
         app = self._make_app({
             "_set_startup_scan_running": Mock(),
             "_start_watch": Mock(),
-            "_sync_folder_after_conversion": Mock(return_value="new-folder"),
+            "_sync_folders_after_conversion": Mock(return_value=["new-folder"]),
         })
         results = [ConvertResult("new-folder", "old-folder", "new-folder", "converted")]
 
-        app._on_startup_scan_cancelled(results, "old-folder")
+        app._on_startup_scan_cancelled(results, ["old-folder"])
 
-        app._sync_folder_after_conversion.assert_called_once_with("old-folder", results)
+        app._sync_folders_after_conversion.assert_called_once_with(["old-folder"], results)
         app._start_watch.assert_called_once_with()
 
 
