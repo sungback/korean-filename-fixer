@@ -6,6 +6,6 @@ version.py
 태그를 만들 때 이 파일도 함께 bump한다.
 """
 
-APP_VERSION = "v1.15.4"
+APP_VERSION = "v1.15.5"
 
 GITHUB_REPO = "sungback/korean-filename-fixer"
