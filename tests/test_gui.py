@@ -790,10 +790,11 @@ class UpdateDownloadTests(unittest.TestCase):
                    return_value=("dir", "/install", "/install/app.exe")):
             with patch("gui.messagebox.askyesno", return_value=True):
                 with patch("gui.os.path.isfile", return_value=True):
-                    with patch("gui.write_update_batch") as write_batch:
-                        with patch("gui.subprocess") as subprocess_mock:
-                            app._on_update_download_done(
-                                "v9.9.9", "dir", "/new", "/install", "/staging")
+                    with patch("gui.sibling_instances", return_value=[]):
+                        with patch("gui.write_update_batch") as write_batch:
+                            with patch("gui.subprocess") as subprocess_mock:
+                                app._on_update_download_done(
+                                    "v9.9.9", "dir", "/new", "/install", "/staging")
 
         write_batch.assert_called_once()
         args, _kwargs = write_batch.call_args
@@ -818,6 +819,29 @@ class UpdateDownloadTests(unittest.TestCase):
         warning.assert_called_once()
         write_batch.assert_not_called()
         app._quit_app.assert_not_called()
+
+    def test_on_update_download_done_aborts_when_sibling_running(self):
+        app = self.make_download_app()
+        app._update_check_in_progress = True
+
+        with patch("gui.App._self_update_target",
+                   return_value=("dir", "D:\\App", "D:\\App\\app.exe")):
+            with patch("gui.messagebox.askyesno", return_value=True):
+                with patch("gui.os.path.isfile", return_value=True):
+                    with patch("gui.same_drive", return_value=True):
+                        with patch("gui.sibling_instances",
+                                   return_value=[1234]):
+                            with patch("gui.messagebox.showwarning") as warning:
+                                with patch("gui.write_update_batch") as write_batch:
+                                    with patch("gui.cleanup_staging") as cleanup:
+                                        app._on_update_download_done(
+                                            "v9.9.9", "dir", "D:\\New",
+                                            "D:\\App", "/staging")
+
+        warning.assert_called_once()
+        write_batch.assert_not_called()
+        app._quit_app.assert_not_called()
+        cleanup.assert_called_once_with("/staging")
 
     def test_on_update_download_done_aborts_on_cross_drive(self):
         app = self.make_download_app()

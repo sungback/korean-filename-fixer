@@ -146,6 +146,38 @@ def same_drive(path_a: str, path_b: str) -> bool:
             == os.path.splitdrive(os.path.abspath(path_b))[0].lower())
 
 
+def sibling_instances(image: str = WINDOWS_EXE_NAME) -> list[int]:
+    """자신을 제외하고 같은 이미지로 실행 중인 PID 목록을 반환한다.
+
+    배치 교체는 폴더 전체를 옮기므로 형제 인스턴스가 하나라도 있으면
+    move가 잠금 실패한다. 시작 전에 미리 차단하기 위한 검사다.
+    Windows가 아니면 항상 빈 목록이다.
+    """
+    if os.name != "nt":
+        return []
+    try:
+        proc = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {image}",
+             "/FO", "CSV", "/NH"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=15, check=False,
+            encoding="utf-8", errors="replace",
+        )
+    except Exception as e:
+        logging.warning(f"실행 중 인스턴스 확인 실패: {e}")
+        return []
+    found: list[int] = []
+    for line in (proc.stdout or "").splitlines():
+        parts = [piece.strip('" ') for piece in line.split(",")]
+        if (len(parts) >= 2
+                and parts[0].lower() == image.lower()
+                and parts[1].isdigit()):
+            pid = int(parts[1])
+            if pid != os.getpid():
+                found.append(pid)
+    return found
+
+
 def write_update_batch(batch_path: str, pid: int, current_dir: str,
                        new_dir: str, exe_path: str,
                        cleanup_paths: list[str] | None = None) -> str:

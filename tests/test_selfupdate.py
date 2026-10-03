@@ -25,6 +25,7 @@ from selfupdate import (
     parse_checksum,
     release_asset_url,
     same_drive,
+    sibling_instances,
     staging_dir,
     verify_bundle,
     verify_sha256,
@@ -428,6 +429,42 @@ class SameDriveTests(unittest.TestCase):
 
     def test_drive_letter_compare_is_case_insensitive(self):
         self.assertTrue(same_drive(r"C:\a", r"c:\b"))
+
+
+class SiblingTests(unittest.TestCase):
+    def _run_ok(self, stdout: str):
+        proc = MagicMock()
+        proc.stdout = stdout
+        return proc
+
+    def test_returns_other_pids_excluding_self(self):
+        csv = ('"KoreanFilenameFixer.exe","30092","Console","1","10,000 K"\n'
+               f'"KoreanFilenameFixer.exe","{os.getpid()}","Console","1","10,000 K"\n'
+               '"other.exe","9999","Console","1","1 K"\n')
+        with patch("selfupdate.subprocess.run",
+                   return_value=self._run_ok(csv)):
+            with patch("selfupdate.os.name", "nt"):
+                self.assertEqual(sibling_instances(), [30092])
+
+    def test_returns_empty_when_only_self(self):
+        csv = (f'"KoreanFilenameFixer.exe","{os.getpid()}",'
+               '"Console","1","10,000 K"\n')
+        with patch("selfupdate.subprocess.run",
+                   return_value=self._run_ok(csv)):
+            with patch("selfupdate.os.name", "nt"):
+                self.assertEqual(sibling_instances(), [])
+
+    def test_returns_empty_off_windows(self):
+        with patch("selfupdate.os.name", "posix"):
+            with patch("selfupdate.subprocess.run") as run:
+                self.assertEqual(sibling_instances(), [])
+                run.assert_not_called()
+
+    def test_returns_empty_when_tasklist_fails(self):
+        with patch("selfupdate.subprocess.run",
+                   side_effect=Exception("no tasklist")):
+            with patch("selfupdate.os.name", "nt"):
+                self.assertEqual(sibling_instances(), [])
 
 
 class MacUpdateTests(unittest.TestCase):

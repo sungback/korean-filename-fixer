@@ -127,6 +127,7 @@ from selfupdate import (
     parse_checksum,
     release_asset_url,
     same_drive,
+    sibling_instances,
     staging_dir,
     verify_bundle,
     verify_sha256,
@@ -1271,6 +1272,14 @@ class App(_AppBase):
                 "업데이트",
                 "임시 폴더와 설치 드라이브가 달라 자동 설치할 수 없습니다. "
                 "다운로드 페이지에서 수동으로 설치하세요.")
+            return False
+        if sibling_instances(os.path.basename(exe_path)):
+            # 형제 인스턴스가 폴더를 잠그고 있어 move가 실패한다. 안전 중단한다.
+            cleanup_staging(staging)
+            messagebox.showwarning(
+                "업데이트",
+                "다른 KoreanFilenameFixer 창이 실행 중입니다. "
+                "모든 창을 종료한 뒤 다시 시도하세요.")
             return False
         zip_path = os.path.join(staging, WINDOWS_ZIP_NAME)
         batch_path = os.path.join(tempfile.gettempdir(), UPDATE_BATCH_NAME)
