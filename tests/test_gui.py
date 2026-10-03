@@ -558,5 +558,116 @@ class CallbackTests(unittest.TestCase):
         app._start_watch.assert_called_once_with()
 
 
+class UpdateCheckTests(unittest.TestCase):
+    def make_update_app(self, extra_attrs=None):
+        app = object.__new__(App)
+        app._cmd_queue = queue.Queue()
+        app.after = Mock(side_effect=AssertionError("worker must not call Tk"))
+        app.status_var = Mock()
+        app.btn_update = Mock()
+        app._log = Mock()
+        app.remember_var = Mock()
+        app.remember_var.get.return_value = False
+        app._save_config = Mock()
+        app._last_update_check = 0.0
+        if extra_attrs:
+            for k, v in extra_attrs.items():
+                setattr(app, k, v)
+        return app
+
+    def test_run_update_check_queues_newer_without_calling_tk_from_worker(self):
+        app = self.make_update_app()
+
+        with patch("gui.fetch_latest_release",
+                   return_value=("v9.9.9", "https://example.com/r")):
+            app._run_update_check(False)
+
+        self.assertEqual(
+            app._cmd_queue.get_nowait(),
+            ("update_check_done", True, "v9.9.9", "https://example.com/r", False),
+        )
+        app.after.assert_not_called()
+
+    def test_run_update_check_queues_failure_without_calling_tk_from_worker(self):
+        app = self.make_update_app()
+
+        with patch("gui.fetch_latest_release", return_value=None):
+            app._run_update_check(True)
+
+        self.assertEqual(
+            app._cmd_queue.get_nowait(),
+            ("update_check_done", False, "", "", True),
+        )
+        app.after.assert_not_called()
+
+    def test_on_update_check_done_prompts_download_when_newer(self):
+        app = self.make_update_app()
+
+        with patch("gui.messagebox.askyesno", return_value=True) as ask:
+            with patch("gui.webbrowser.open") as open_browser:
+                app._on_update_check_done(True, "v9.9.9", "https://example.com/r", False)
+
+        self.assertIn("v9.9.9", app.status_var.set.call_args.args[0])
+        ask.assert_called_once()
+        open_browser.assert_called_once_with("https://example.com/r")
+        app.btn_update.config.assert_called_with(state="normal")
+
+    def test_on_update_check_done_skips_browser_when_declined(self):
+        app = self.make_update_app()
+
+        with patch("gui.messagebox.askyesno", return_value=False):
+            with patch("gui.webbrowser.open") as open_browser:
+                app._on_update_check_done(True, "v9.9.9", "https://example.com/r", True)
+
+        open_browser.assert_not_called()
+
+    def test_on_update_check_done_shows_latest_for_manual_check(self):
+        app = self.make_update_app()
+
+        with patch("gui.messagebox.showinfo") as showinfo:
+            with patch("gui.APP_VERSION", "v1.13.1"):
+                app._on_update_check_done(False, "v1.13.1", "https://example.com/r", True)
+
+        showinfo.assert_called_once()
+        self.assertIn("최신", app.status_var.set.call_args.args[0])
+
+    def test_on_update_check_done_shows_warning_for_failed_manual_check(self):
+        app = self.make_update_app()
+
+        with patch("gui.messagebox.showwarning") as showwarning:
+            app._on_update_check_done(False, "", "", True)
+
+        showwarning.assert_called_once()
+        app.status_var.set.assert_called_once_with("업데이트 확인 실패")
+
+    def test_on_update_check_done_stays_silent_for_failed_auto_check(self):
+        app = self.make_update_app()
+
+        with patch("gui.messagebox.askyesno") as ask:
+            with patch("gui.messagebox.showinfo") as showinfo:
+                with patch("gui.messagebox.showwarning") as showwarning:
+                    app._on_update_check_done(False, "", "", False)
+
+        ask.assert_not_called()
+        showinfo.assert_not_called()
+        showwarning.assert_not_called()
+
+    def test_poll_queue_dispatches_update_check_commands(self):
+        app = object.__new__(App)
+        app._queue = queue.Queue()
+        app._cmd_queue = queue.Queue()
+        app._poll_after_id = None
+        app._shutting_down = False
+        app.after = Mock(return_value="after-id")
+        app._log_result = Mock()
+        app._on_update_check_done = Mock()
+        app._cmd_queue.put(("update_check_done", True, "v9.9.9", "https://example.com/r", False))
+
+        app._poll_queue()
+
+        app._on_update_check_done.assert_called_once_with(
+            True, "v9.9.9", "https://example.com/r", False)
+
+
 if __name__ == "__main__":
     unittest.main()

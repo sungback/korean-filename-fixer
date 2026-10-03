@@ -14,15 +14,17 @@ import queue
 import subprocess
 import sys
 import threading
+import time
+import webbrowser
 from logging.handlers import RotatingFileHandler
 try:
     import tkinter as tk
-    from tkinter import filedialog, scrolledtext, ttk
+    from tkinter import filedialog, messagebox, scrolledtext, ttk
     _TKINTER_AVAILABLE = True
     _TKINTER_IMPORT_ERROR = None
 except ImportError as e:
     tk = None
-    filedialog = scrolledtext = ttk = None
+    filedialog = messagebox = scrolledtext = ttk = None
     _TKINTER_AVAILABLE = False
     _TKINTER_IMPORT_ERROR = e
 
@@ -100,6 +102,12 @@ from autostart import (
     needs_autostart_refresh,
 )
 from watcher import FolderWatcher
+from version import APP_VERSION, GITHUB_REPO
+from updater import (
+    fetch_latest_release,
+    is_newer,
+    should_check,
+)
 
 
 _AppBase = (
@@ -136,6 +144,8 @@ class App(_AppBase):
         self._watcher_notify_count = 0
         self._watcher_notify_after_id = None
         self._autostart_path = get_autostart_executable_path()
+        self._last_update_check: float = 0.0
+        self._update_check_in_progress = False
 
         self._build_ui()
         self._setup_drop()
@@ -145,6 +155,7 @@ class App(_AppBase):
         self._health_check()
         self._setup_tray()
         self._register_reopen_command()
+        self._maybe_auto_update_check()
 
     def _is_dark_mode(self) -> bool:
         """시스템 테마가 다크 모드인지 감지한다."""
@@ -342,6 +353,10 @@ class App(_AppBase):
                                      command=self._convert_once)
         self.btn_once.pack(side="left", padx=(0, 6))
 
+        self.btn_update = self._button(frame, text="업데이트 확인",
+                                       command=self._check_update_manual)
+        self.btn_update.pack(side="left", padx=(0, 6))
+
         self._button(frame, text="로그 지우기",
                      command=self._clear_log).pack(side="left", padx=(0, 6))
 
@@ -413,6 +428,7 @@ class App(_AppBase):
             self.exclude_var.set(self._format_exclude_patterns(exclude_patterns))
             self.scan_on_startup_var.set(bool(data.get("scan_on_startup", True)))
             self.notify_on_convert_var.set(bool(data.get("notify_on_convert", True)))
+            self._last_update_check = float(data.get("last_update_check", 0.0) or 0.0)
             self._sync_autostart_state()
             raw_folders = data.get("folders")
             if raw_folders is None and data.get("folder"):
@@ -455,6 +471,7 @@ class App(_AppBase):
                     "exclude_patterns": self._get_exclude_patterns(),
                     "scan_on_startup": self.scan_on_startup_var.get(),
                     "notify_on_convert": self.notify_on_convert_var.get(),
+                    "last_update_check": self.__dict__.get("_last_update_check", 0.0),
                 }, f, ensure_ascii=False)
         else:
             try:
@@ -1027,6 +1044,75 @@ class App(_AppBase):
         finally:
             self._watch_paused_for_operation = False
 
+    # ─── 업데이트 확인 ────────────────────────────────────────
+
+    def _maybe_auto_update_check(self):
+        """시작 시 마지막 확인 후 7일이 지났으면 새 버전을 확인한다."""
+        if self.__dict__.get("_update_check_in_progress"):
+            return
+        if not should_check(self.__dict__.get("_last_update_check", 0.0)):
+            return
+        self._start_update_check(manual=False)
+
+    def _check_update_manual(self):
+        """버튼으로 직접 새 버전을 확인한다."""
+        if self._update_check_in_progress:
+            self.status_var.set("업데이트 확인 중입니다.")
+            return
+        self._start_update_check(manual=True)
+
+    def _start_update_check(self, manual: bool):
+        self._update_check_in_progress = True
+        self.btn_update.config(state="disabled")
+        if manual:
+            self.status_var.set("업데이트 확인 중...")
+        threading.Thread(
+            target=self._run_update_check,
+            args=(manual,),
+            daemon=True,
+        ).start()
+
+    def _run_update_check(self, manual: bool):
+        """백그라운드 스레드에서 최신 릴리스를 조회하고 결과를 큐에 넣는다."""
+        try:
+            found = fetch_latest_release(GITHUB_REPO)
+        except Exception:
+            found = None
+        if found is None:
+            self._cmd_queue.put(("update_check_done", False, "", "", manual))
+        else:
+            tag, url = found
+            self._cmd_queue.put(
+                ("update_check_done", is_newer(tag, APP_VERSION), tag, url, manual))
+
+    def _on_update_check_done(self, has_update: bool, tag: str, url: str, manual: bool):
+        """업데이트 확인 결과를 표시한다. 다운로드는 사용자 승인 후에만 연다."""
+        self._update_check_in_progress = False
+        self.btn_update.config(state="normal")
+        if tag:
+            self._last_update_check = time.time()
+            try:
+                if self.remember_var.get():
+                    self._save_config()
+            except Exception:
+                pass
+        if has_update and tag:
+            msg = f"새 버전 {tag} 사용 가능 (현재 {APP_VERSION})"
+            self.status_var.set(msg)
+            self._log(f"{msg} — 다운로드 페이지에서 직접 설치하세요.", "info")
+            if messagebox.askyesno("업데이트", f"{msg}\n다운로드 페이지를 여시겠습니까?"):
+                webbrowser.open(url)
+        elif manual:
+            if tag:
+                messagebox.showinfo("업데이트", f"최신 버전입니다. (현재 {APP_VERSION})")
+                self.status_var.set(f"최신 버전입니다. ({APP_VERSION})")
+            else:
+                messagebox.showwarning(
+                    "업데이트", "버전 확인에 실패했습니다. 네트워크 연결 후 다시 시도하세요.")
+                self.status_var.set("업데이트 확인 실패")
+        elif not tag:
+            logging.warning("자동 업데이트 확인 실패")
+
     # ─── 로그 출력 ────────────────────────────────────────────
 
     def _dispatch_command(self, cmd):
@@ -1048,6 +1134,8 @@ class App(_AppBase):
                 self._on_batch_done(*args)
             elif action == "batch_failed":
                 self._on_batch_failed(*args)
+            elif action == "update_check_done":
+                self._on_update_check_done(*args)
             return
 
         if cmd == "start":
