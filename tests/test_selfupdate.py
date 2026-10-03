@@ -10,6 +10,7 @@ from selfupdate import (
     MACOS_ZIP_NAME,
     WINDOWS_EXE_NAME,
     WINDOWS_ZIP_NAME,
+    batch_text_encoding,
     checksum_url,
     cleanup_staging,
     current_exe_path,
@@ -23,6 +24,7 @@ from selfupdate import (
     latest_asset_url,
     parse_checksum,
     release_asset_url,
+    same_drive,
     staging_dir,
     verify_bundle,
     verify_sha256,
@@ -172,7 +174,7 @@ class BatchTests(unittest.TestCase):
                 r"C:\App\KoreanFilenameFixer\KoreanFilenameFixer.exe",
                 cleanup_paths=[os.path.join(tmp, "a.zip")],
             )
-            with open(batch_path, encoding="ascii") as f:
+            with open(batch_path, encoding=batch_text_encoding()) as f:
                 content = f.read()
 
         self.assertIn("1234", content)
@@ -197,7 +199,7 @@ class BatchTests(unittest.TestCase):
             batch_path = os.path.join(tmp, "update.bat")
             write_update_batch(
                 batch_path, 1, r"C:\App", r"C:\New", r"C:\App\app.exe")
-            with open(batch_path, encoding="ascii") as f:
+            with open(batch_path, encoding=batch_text_encoding()) as f:
                 content = f.read()
         self.assertIn("KFF_LOG", content)
         self.assertIn(":waitcap", content)
@@ -212,7 +214,7 @@ class BatchTests(unittest.TestCase):
                 r"C:\Temp\KFF_new\KoreanFilenameFixer",
                 r"C:\App\KoreanFilenameFixer\KoreanFilenameFixer.exe",
             )
-            with open(batch_path, encoding="ascii") as f:
+            with open(batch_path, encoding=batch_text_encoding()) as f:
                 content = f.read()
 
         # find가 파이프가 아닌 파일을 읽어야 키보드 대기가 구조적으로 불가능하다
@@ -229,7 +231,7 @@ class BatchTests(unittest.TestCase):
                 r"C:\Temp\KFF_new\KoreanFilenameFixer",
                 r"C:\App\KoreanFilenameFixer\KoreanFilenameFixer.exe",
             )
-            with open(batch_path, encoding="ascii") as f:
+            with open(batch_path, encoding=batch_text_encoding()) as f:
                 content = f.read()
 
         # PID 재사용 오탐 방지: 이미지명 필터
@@ -248,7 +250,7 @@ class BatchTests(unittest.TestCase):
                 r"C:\Temp\KFF_new\KoreanFilenameFixer",
                 r"C:\App\KoreanFilenameFixer\KoreanFilenameFixer.exe",
             )
-            with open(batch_path, encoding="ascii") as f:
+            with open(batch_path, encoding=batch_text_encoding()) as f:
                 content = f.read()
 
         self.assertIn("for /L %%i in (1,1,3)", content)
@@ -257,6 +259,62 @@ class BatchTests(unittest.TestCase):
         self.assertIn("move-in failed", content)
         self.assertIn("rollback-ok exe restored", content)
         self.assertIn("rollback-FAILED", content)
+
+
+class BatchSafetyTests(unittest.TestCase):
+    def _write(self, tmp: str, current: str, new: str) -> str:
+        batch_path = os.path.join(tmp, "update.bat")
+        write_update_batch(
+            batch_path, 7, current, new,
+            current + "\\" + WINDOWS_EXE_NAME,
+        )
+        with open(batch_path, "rb") as f:
+            raw = f.read()
+        return raw.decode(batch_text_encoding())
+
+    def test_aside_failed_path_never_touches_current(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            content = self._write(
+                tmp,
+                r"C:\App\KoreanFilenameFixer",
+                r"C:\Temp\KFF_new\KoreanFilenameFixer",
+            )
+
+        self.assertIn(":aside_failed", content)
+        self.assertIn(":movein_failed", content)
+        section = content.split(":aside_failed")[1].split("exit /b 1")[0]
+        self.assertNotIn('rmdir /s /q "%KFF_CURRENT%"', section)
+        self.assertIn("CURRENT untouched", section)
+
+    def test_bak_is_rotated_instead_of_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            content = self._write(
+                tmp,
+                r"C:\App\KoreanFilenameFixer",
+                r"C:\Temp\KFF_new\KoreanFilenameFixer",
+            )
+
+        self.assertIn("KFF_BAK_PREV", content)
+        self.assertNotIn(
+            'if exist "%KFF_BAK%" rmdir /s /q "%KFF_BAK%"', content)
+
+    def test_korean_paths_survive_batch_roundtrip(self):
+        current = r"C:\사용자\홍길동\KoreanFilenameFixer"
+        with tempfile.TemporaryDirectory() as tmp:
+            content = self._write(
+                tmp, current, os.path.join(tmp, "새버전"))
+            self.assertIn(current, content)
+            self.assertIn("새버전", content)
+            self.assertNotIn("?", content)
+
+
+class SameDriveTests(unittest.TestCase):
+    def test_same_dir_is_same_drive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(same_drive(tmp, os.path.join(tmp, "sub")))
+
+    def test_drive_letter_compare_is_case_insensitive(self):
+        self.assertTrue(same_drive(r"C:\a", r"c:\b"))
 
 
 class MacUpdateTests(unittest.TestCase):

@@ -126,6 +126,7 @@ from selfupdate import (
     is_writable_dir,
     parse_checksum,
     release_asset_url,
+    same_drive,
     staging_dir,
     verify_bundle,
     verify_sha256,
@@ -1261,6 +1262,15 @@ class App(_AppBase):
                 "업데이트",
                 "다운로드한 파일이 사라졌습니다(백신 격리 가능). "
                 "백신 예외 등록 후 다시 시도하세요.")
+            return False
+        if not same_drive(install_dir, new_dir):
+            # 디렉터리 move는 볼륨을 넘을 수 없어 실패가 확정적이다.
+            # 구 배치처럼 진행했다간 설치 폴더를 잃을 수 있어 사전에 중단한다.
+            cleanup_staging(staging)
+            messagebox.showwarning(
+                "업데이트",
+                "임시 폴더와 설치 드라이브가 달라 자동 설치할 수 없습니다. "
+                "다운로드 페이지에서 수동으로 설치하세요.")
             return False
         zip_path = os.path.join(staging, WINDOWS_ZIP_NAME)
         batch_path = os.path.join(tempfile.gettempdir(), UPDATE_BATCH_NAME)

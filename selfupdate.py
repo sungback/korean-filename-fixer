@@ -137,12 +137,33 @@ def cleanup_staging(path: str):
     shutil.rmtree(path, ignore_errors=True)
 
 
+def batch_text_encoding() -> str:
+    """배치 파일 쓰기 인코딩을 반환한다.
+
+    cmd는 배치를 ANSI 코드페이지로 해석하므로 Windows에서는 mbcs
+    (한글 윈도우=cp949), 그 외 플랫폼(테스트용)에서는 utf-8을 쓴다.
+    ascii 경로라면 어느 쪽도 바이트가 동일하다.
+    """
+    return "mbcs" if os.name == "nt" else "utf-8"
+
+
+def same_drive(path_a: str, path_b: str) -> bool:
+    """두 경로가 같은 드라이브(볼륨)에 있으면 True.
+
+    디렉터리 move 교체는 볼륨을 넘을 수 없으므로 자동 업데이트 전제 조건이다.
+    """
+    return (os.path.splitdrive(os.path.abspath(path_a))[0].lower()
+            == os.path.splitdrive(os.path.abspath(path_b))[0].lower())
+
+
 def write_update_batch(batch_path: str, pid: int, current_dir: str,
                        new_dir: str, exe_path: str,
                        cleanup_paths: list[str] | None = None) -> str:
     """종료 대기→.bak 회전→스왑→재실행→자기 삭제 배치를 생성한다.
 
     cleanup_paths는 교체 성공 후 함께 지울 임시 파일/폴더(zip, 스테이징 등)다.
+    move-aside 실패 시에는 현행 폴더를 절대 건드리지 않고 종료한다
+    (:aside_failed). .bak 복원은 move-in 실패 때만 수행한다.
     """
     cleanup_lines = ""
     for path in cleanup_paths or []:
@@ -161,6 +182,7 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
         f'set "KFF_NEW={new_dir}"',
         f'set "KFF_EXE={exe_path}"',
         'set "KFF_BAK=%KFF_CURRENT%.bak"',
+        'set "KFF_BAK_PREV=%KFF_BAK%.prev"',
         'set "KFF_NEW_EXE=%KFF_CURRENT%\\%KFF_IMAGE%"',
         'set "KFF_TRIES=0"',
         f'set "KFF_LOG={log_path}"',
@@ -174,7 +196,7 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
         'find "%KFF_PID%" "%KFF_WAIT%" >nul 2>&1',
         "if errorlevel 1 goto swapwait",
         "set /a KFF_TRIES+=1",
-        "rem 최대 3분 대기 후에는 진행한다. 잠겨 있으면 move 실패→롤백된다.",
+        "rem 최대 3분 대기 후에는 진행한다. 잠겨 있으면 move 실패→안전 종료된다.",
         "if %KFF_TRIES% GEQ 180 goto waitcap",
         "timeout /t 1 /nobreak >nul",
         "goto waitloop",
@@ -191,7 +213,9 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
         "",
         ":swap",
         'echo [%DATE% %TIME%] swap start >> "%KFF_LOG%"',
-        'if exist "%KFF_BAK%" rmdir /s /q "%KFF_BAK%"',
+        "rem 이전 백업은 바로 지우지 않고 한 세대 보관한다 (이중 실패 대비).",
+        'if exist "%KFF_BAK_PREV%" rmdir /s /q "%KFF_BAK_PREV%"',
+        'if exist "%KFF_BAK%" move "%KFF_BAK%" "%KFF_BAK_PREV%" >nul 2>&1',
         "rem 백신·동기화 잠금을 넘기기 위해 최대 3회 재시도한다.",
         "for /L %%i in (1,1,3) do (",
         '  if exist "%KFF_CURRENT%" move "%KFF_CURRENT%" "%KFF_BAK%" >nul 2>&1',
@@ -200,7 +224,8 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
         ")",
         ":moved_aside",
         'if exist "%KFF_CURRENT%" echo [%DATE% %TIME%] move-aside failed >> "%KFF_LOG%"',
-        'if exist "%KFF_CURRENT%" goto rollback',
+        "rem aside 실패 시 CURRENT는 멀쩡한 현행본이므로 절대 삭제하지 않고 종료한다.",
+        'if exist "%KFF_CURRENT%" goto aside_failed',
         "for /L %%i in (1,1,3) do (",
         '  if not exist "%KFF_NEW_EXE%" move "%KFF_NEW%" "%KFF_CURRENT%" >nul 2>&1',
         '  if exist "%KFF_NEW_EXE%" goto moved_in',
@@ -208,16 +233,27 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
         ")",
         ":moved_in",
         'if not exist "%KFF_NEW_EXE%" echo [%DATE% %TIME%] move-in failed >> "%KFF_LOG%"',
-        'if not exist "%KFF_NEW_EXE%" goto rollback',
+        'if not exist "%KFF_NEW_EXE%" goto movein_failed',
         'start "" "%KFF_EXE%"',
         'rmdir /s /q "%KFF_NEW%" 2>nul',
+        'rmdir /s /q "%KFF_BAK_PREV%" 2>nul',
         cleanup_lines.rstrip("\n"),
         'echo [%DATE% %TIME%] done >> "%KFF_LOG%"',
         'del "%~f0"',
         "exit /b 0",
         "",
-        ":rollback",
-        'echo [%DATE% %TIME%] rollback >> "%KFF_LOG%"',
+        ":aside_failed",
+        'echo [%DATE% %TIME%] aside-failed CURRENT untouched >> "%KFF_LOG%"',
+        "rem CURRENT는 멀쩡하므로 손대지 않는다. 이전 백업 위치만 원복한다.",
+        'if not exist "%KFF_BAK%" if exist "%KFF_BAK_PREV%" move "%KFF_BAK_PREV%" "%KFF_BAK%" >nul 2>&1',
+        cleanup_lines.rstrip("\n"),
+        'echo [%DATE% %TIME%] aside-failed exit >> "%KFF_LOG%"',
+        'del "%~f0"',
+        "exit /b 1",
+        "",
+        ":movein_failed",
+        'echo [%DATE% %TIME%] movein-failed rollback >> "%KFF_LOG%"',
+        "rem 여기서는 move-aside가 성공했으므로 BAK에 현행본이 있다.",
         "for /L %%i in (1,1,3) do (",
         '  if not exist "%KFF_CURRENT%" goto restore_bak',
         '  rmdir /s /q "%KFF_CURRENT%" 2>nul',
@@ -240,7 +276,7 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
     parent = os.path.dirname(batch_path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    with open(batch_path, "w", encoding="ascii", errors="replace", newline="") as f:
+    with open(batch_path, "w", encoding=batch_text_encoding(), newline="") as f:
         f.write(content)
     return batch_path
 
