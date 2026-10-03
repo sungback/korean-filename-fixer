@@ -37,8 +37,11 @@ class _DriveFSContext:
 
 _IGNORED_TEMP_NAME_RE = re.compile(r"\.sb-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+$")
 DEFAULT_EXCLUDE_PATTERNS = (
-    ".git", "node_modules", "venv", ".venv", "__pycache__", 
-    "build", "dist", ".idea", ".vscode"
+    ".git", ".svn", ".hg", "node_modules", ".next", ".nuxt",
+    "venv", ".venv", ".tox", "__pycache__", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache", "*.egg-info",
+    "build", "dist", "out", "target", "DerivedData",
+    ".dropbox.cache", ".idea", ".vscode",
 )
 DRIVEFS_SYNC_TIMEOUT = 60.0
 DRIVEFS_SYNC_POLL_INTERVAL = 1.0

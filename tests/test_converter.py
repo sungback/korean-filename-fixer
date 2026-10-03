@@ -11,6 +11,7 @@ from converter import (
     ConvertResult,
     convert_file,
     convert_folder,
+    DEFAULT_EXCLUDE_PATTERNS,
     folder_after_results,
     is_nfd,
     plan_file,
@@ -40,6 +41,21 @@ class ConverterTests(unittest.TestCase):
         path = os.path.join("/tmp", "project", "node_modules", "pkg", "file.txt")
         self.assertTrue(should_exclude_path(path, ["node_modules"], is_directory=False))
         self.assertFalse(should_exclude_path(path, ["file.txt"], is_directory=False))
+
+    def test_default_exclude_patterns_cover_tool_generated_directories(self):
+        for dirname in ("DerivedData", ".dropbox.cache", ".tox", ".pytest_cache",
+                        ".mypy_cache", ".ruff_cache", "target", "out",
+                        ".next", ".nuxt", ".svn", ".hg", "myproj.egg-info"):
+            path = os.path.join("/tmp", "project", dirname, "file.txt")
+            self.assertTrue(
+                should_exclude_path(path, DEFAULT_EXCLUDE_PATTERNS, is_directory=False),
+                f"{dirname} should be excluded",
+            )
+
+    def test_default_exclude_patterns_do_not_hide_plain_files(self):
+        path = os.path.join("/tmp", "project", "docs", "file.txt")
+        self.assertFalse(
+            should_exclude_path(path, DEFAULT_EXCLUDE_PATTERNS, is_directory=False))
 
     def test_convert_file_renames_nfd_filename_to_nfc(self):
         with tempfile.TemporaryDirectory() as tmp:
