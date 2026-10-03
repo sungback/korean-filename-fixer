@@ -55,6 +55,7 @@ git tag vX.X.X && git push origin main && git push origin vX.X.X
 - 태그 규칙: `v{major}.{minor}.{patch}` — 최신 `v1.16.2`
 - 기능 추가: minor 버전 업, 버그 수정/리팩토링: patch 버전 업
 - **릴리스 태그와 `version.py`의 `APP_VERSION`은 항상 같은 값으로 함께 bump**
+- **창 제목은 `APP_VERSION`을 그대로 표시하므로 릴리스마다 제목을 손으로 바꾸지 않는다**
 - **소스 기능 변경이 없을 때(문서, 설정 등)는 태그 없이 push만**
 
 ## 대화 관리
