@@ -145,45 +145,57 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
             cleanup_lines += f'rmdir /s /q "{path}" 2>nul\n'
         else:
             cleanup_lines += f'del /f /q "{path}" 2>nul\n'
-    content = (
-        "@echo off\n"
-        "setlocal\n"
-        f'set "KFF_PID={pid}"\n'
-        f'set "KFF_IMAGE={ntpath.basename(exe_path)}"\n'
-        f'set "KFF_CURRENT={current_dir}"\n'
-        f'set "KFF_NEW={new_dir}"\n'
-        f'set "KFF_EXE={exe_path}"\n'
-        'set "KFF_BAK=%KFF_CURRENT%.bak"\n'
-        'set "KFF_TRIES=0"\n'
-        "\n"
-        ":waitloop\n"
-        "rem PID는 재사용될 수 있어 이미지명까지 함께 확인한다.\n"
-        'tasklist /FI "PID eq %KFF_PID%" /FI "IMAGENAME eq %KFF_IMAGE%" 2>nul | find "%KFF_PID%" >nul\n'
-        "if errorlevel 1 goto swap\n"
-        "set /a KFF_TRIES+=1\n"
-        "rem 최대 3분 대기 후에는 진행한다. 잠겨 있으면 move 실패→롤백된다.\n"
-        "if %KFF_TRIES% GEQ 180 goto swap\n"
-        "timeout /t 1 /nobreak >nul\n"
-        "goto waitloop\n"
-        "\n"
-        ":swap\n"
-        'if exist "%KFF_BAK%" rmdir /s /q "%KFF_BAK%"\n'
-        'move "%KFF_CURRENT%" "%KFF_BAK%" >nul\n'
-        "if errorlevel 1 goto rollback\n"
-        'move "%KFF_NEW%" "%KFF_CURRENT%" >nul\n'
-        "if errorlevel 1 goto rollback\n"
-        'start "" "%KFF_EXE%"\n'
-        'rmdir /s /q "%KFF_NEW%" 2>nul\n'
-        f"{cleanup_lines}"
-        'del "%~f0"\n'
-        "exit /b 0\n"
-        "\n"
-        ":rollback\n"
-        'if exist "%KFF_CURRENT%" rmdir /s /q "%KFF_CURRENT%" 2>nul\n'
-        'if exist "%KFF_BAK%" move "%KFF_BAK%" "%KFF_CURRENT%" >nul\n'
-        'del "%~f0"\n'
-        "exit /b 1\n"
-    )
+    log_path = batch_path + ".log"
+    lines = [
+        "@echo off",
+        "setlocal",
+        f'set "KFF_PID={pid}"',
+        f'set "KFF_IMAGE={ntpath.basename(exe_path)}"',
+        f'set "KFF_CURRENT={current_dir}"',
+        f'set "KFF_NEW={new_dir}"',
+        f'set "KFF_EXE={exe_path}"',
+        'set "KFF_BAK=%KFF_CURRENT%.bak"',
+        'set "KFF_TRIES=0"',
+        f'set "KFF_LOG={log_path}"',
+        "",
+        'echo [%DATE% %TIME%] self-update start pid=%KFF_PID% image=%KFF_IMAGE% > "%KFF_LOG%"',
+        ":waitloop",
+        "rem PID는 재사용될 수 있어 이미지명까지 함께 확인한다.",
+        'tasklist /FI "PID eq %KFF_PID%" /FI "IMAGENAME eq %KFF_IMAGE%" 2>nul | find "%KFF_PID%" >nul',
+        "if errorlevel 1 goto swap",
+        "set /a KFF_TRIES+=1",
+        "rem 최대 3분 대기 후에는 진행한다. 잠겨 있으면 move 실패→롤백된다.",
+        "if %KFF_TRIES% GEQ 180 goto waitcap",
+        "timeout /t 1 /nobreak >nul",
+        "goto waitloop",
+        "",
+        ":waitcap",
+        'echo [%DATE% %TIME%] wait cap reached, tasklist follows >> "%KFF_LOG%"',
+        'tasklist /FI "PID eq %KFF_PID%" /FI "IMAGENAME eq %KFF_IMAGE%" >> "%KFF_LOG%" 2>&1',
+        "goto swap",
+        "",
+        ":swap",
+        'echo [%DATE% %TIME%] swap start >> "%KFF_LOG%"',
+        'if exist "%KFF_BAK%" rmdir /s /q "%KFF_BAK%"',
+        'move "%KFF_CURRENT%" "%KFF_BAK%" >nul',
+        "if errorlevel 1 goto rollback",
+        'move "%KFF_NEW%" "%KFF_CURRENT%" >nul',
+        "if errorlevel 1 goto rollback",
+        'start "" "%KFF_EXE%"',
+        'rmdir /s /q "%KFF_NEW%" 2>nul',
+        cleanup_lines.rstrip("\n"),
+        'echo [%DATE% %TIME%] done >> "%KFF_LOG%"',
+        'del "%~f0"',
+        "exit /b 0",
+        "",
+        ":rollback",
+        'echo [%DATE% %TIME%] rollback >> "%KFF_LOG%"',
+        'if exist "%KFF_CURRENT%" rmdir /s /q "%KFF_CURRENT%" 2>nul',
+        'if exist "%KFF_BAK%" move "%KFF_BAK%" "%KFF_CURRENT%" >nul',
+        'del "%~f0"',
+        "exit /b 1",
+    ]
+    content = "\r\n".join(lines) + "\r\n"
     parent = os.path.dirname(batch_path)
     if parent:
         os.makedirs(parent, exist_ok=True)

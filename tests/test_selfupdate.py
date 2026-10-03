@@ -173,6 +173,27 @@ class BatchTests(unittest.TestCase):
         self.assertIn("tasklist", content)
         self.assertIn("a.zip", content)
 
+    def test_batch_uses_crlf_line_endings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            batch_path = os.path.join(tmp, "update.bat")
+            write_update_batch(
+                batch_path, 1, r"C:\App", r"C:\New", r"C:\App\app.exe")
+            with open(batch_path, "rb") as f:
+                raw = f.read()
+        self.assertIn(b"\r\n", raw)
+        self.assertNotRegex(raw.replace(b"\r\n", b""), rb"\n")
+
+    def test_batch_writes_diagnostic_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            batch_path = os.path.join(tmp, "update.bat")
+            write_update_batch(
+                batch_path, 1, r"C:\App", r"C:\New", r"C:\App\app.exe")
+            with open(batch_path, encoding="ascii") as f:
+                content = f.read()
+        self.assertIn("KFF_LOG", content)
+        self.assertIn(":waitcap", content)
+        self.assertIn("rollback", content)
+
     def test_batch_filters_by_image_and_caps_wait(self):
         with tempfile.TemporaryDirectory() as tmp:
             batch_path = os.path.join(tmp, "update.bat")
