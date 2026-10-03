@@ -1,4 +1,5 @@
 import io
+import ssl
 import unittest
 from unittest.mock import MagicMock, patch
 from urllib.error import URLError
@@ -9,6 +10,7 @@ from updater import (
     is_newer,
     parse_version,
     should_check,
+    ssl_context,
 )
 
 
@@ -70,6 +72,17 @@ class FetchReleaseTests(unittest.TestCase):
         with patch("updater.urllib.request.urlopen",
                    return_value=self._urlopen_ok(payload)):
             self.assertIsNone(fetch_latest_release("owner/repo"))
+
+    def test_ssl_context_returns_ssl_context(self):
+        self.assertIsInstance(ssl_context(), ssl.SSLContext)
+
+    def test_fetch_passes_ssl_context_to_urlopen(self):
+        payload = b'{"tag_name": "v1.14.0", "html_url": "https://example.com/r"}'
+        with patch("updater.urllib.request.urlopen",
+                   return_value=self._urlopen_ok(payload)) as urlopen:
+            fetch_latest_release("owner/repo")
+            self.assertIsInstance(
+                urlopen.call_args.kwargs.get("context"), ssl.SSLContext)
 
 
 if __name__ == "__main__":

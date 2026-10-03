@@ -4,12 +4,20 @@ GitHub Releases API 기반 새 버전 확인 모듈 (B안: 확인 + 다운로드
 
 자동 다운로드·설치는 하지 않는다. 새 버전이 있으면 GUI가 팝업으로 알리고,
 사용자 승인 후에만 브라우저로 릴리스 페이지를 연다.
-표준라이브러리만 사용한다 (urllib).
 """
 
 import json
+import logging
+import ssl
 import time
 import urllib.request
+
+try:
+    import certifi
+    _CERTIFI_AVAILABLE = True
+except ImportError:
+    certifi = None
+    _CERTIFI_AVAILABLE = False
 
 LATEST_RELEASE_URL = "https://api.github.com/repos/{repo}/releases/latest"
 
@@ -48,6 +56,17 @@ def should_check(last_check: float, now: float | None = None,
     return (now - (last_check or 0)) >= interval
 
 
+def ssl_context() -> ssl.SSLContext:
+    """HTTPS 검증용 컨텍스트를 반환한다.
+
+    PyInstaller 번들에는 시스템 CA 묶음이 없어 frozen 앱의 HTTPS가 실패하므로,
+    certifi가 있으면 그 CA 파일을 사용한다.
+    """
+    if _CERTIFI_AVAILABLE:
+        return ssl.create_default_context(cafile=certifi.where())
+    return ssl.create_default_context()
+
+
 def fetch_latest_release(repo: str,
                          timeout: float = UPDATE_CHECK_TIMEOUT
                          ) -> tuple[str, str] | None:
@@ -60,12 +79,14 @@ def fetch_latest_release(repo: str,
     request = urllib.request.Request(
         url, headers={"Accept": "application/vnd.github+json"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout,
+                                    context=ssl_context()) as response:
             data = json.load(response)
         tag = data.get("tag_name", "")
         html_url = data.get("html_url", "")
         if not tag:
             return None
         return (tag, html_url)
-    except Exception:
+    except Exception as e:
+        logging.warning(f"업데이트 확인 실패: {e}")
         return None

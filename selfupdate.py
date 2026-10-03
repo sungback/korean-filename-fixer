@@ -5,16 +5,18 @@ Windows 배치 도우미 기반 자동 교체 모듈 (C-1안).
 실행 중인 exe는 Windows 파일 잠금 때문에 자신을 덮어쓸 수 없으므로,
 배치 스크립트를 %TEMP%에 생성해 앱 종료 후 폴더 단위(onedir 전체) 교체를 수행한다.
 macOS는 대상이 아니다 (브라우저 다운로드 유지).
-표준라이브러리만 사용한다.
 """
 
 import hashlib
+import logging
 import os
 import shutil
 import sys
 import tempfile
 import urllib.request
 import zipfile
+
+from updater import ssl_context
 
 WINDOWS_ZIP_NAME = "KoreanFilenameFixer-Windows.zip"
 WINDOWS_EXE_NAME = "KoreanFilenameFixer.exe"
@@ -49,7 +51,8 @@ def download_update(url: str, dest_path: str, progress_callback=None,
     request = urllib.request.Request(url, headers={"Accept": "application/octet-stream"})
     downloaded = 0
     total = None
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with urllib.request.urlopen(request, timeout=timeout,
+                                context=ssl_context()) as response:
         try:
             total = int(response.info().get("Content-Length") or 0) or None
         except (TypeError, ValueError):
@@ -69,9 +72,11 @@ def download_update(url: str, dest_path: str, progress_callback=None,
 def fetch_text(url: str, timeout: float = TEXT_TIMEOUT) -> str | None:
     """짧은 텍스트(체크섬 파일 등)를 내려받는다. 실패 시 None."""
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with urllib.request.urlopen(url, timeout=timeout,
+                                    context=ssl_context()) as response:
             return response.read().decode("utf-8", errors="replace")
-    except Exception:
+    except Exception as e:
+        logging.warning(f"텍스트 다운로드 실패: {e}")
         return None
 
 
