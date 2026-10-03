@@ -173,6 +173,25 @@ class BatchTests(unittest.TestCase):
         self.assertIn("tasklist", content)
         self.assertIn("a.zip", content)
 
+    def test_batch_filters_by_image_and_caps_wait(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            batch_path = os.path.join(tmp, "update.bat")
+            write_update_batch(
+                batch_path, 16836,
+                r"C:\App\KoreanFilenameFixer",
+                r"C:\Temp\KFF_new\KoreanFilenameFixer",
+                r"C:\App\KoreanFilenameFixer\KoreanFilenameFixer.exe",
+            )
+            with open(batch_path, encoding="ascii") as f:
+                content = f.read()
+
+        # PID 재사용 오탐 방지: 이미지명 필터
+        self.assertIn("IMAGENAME eq %KFF_IMAGE%", content)
+        self.assertIn("KFF_IMAGE=KoreanFilenameFixer.exe", content)
+        # 무한 대기 방지: 최대 시도 후 진행
+        self.assertIn("KFF_TRIES", content)
+        self.assertIn("GEQ 180", content)
+
 
 if __name__ == "__main__":
     unittest.main()

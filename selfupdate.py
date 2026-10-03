@@ -9,6 +9,7 @@ macOS는 대상이 아니다 (브라우저 다운로드 유지).
 
 import hashlib
 import logging
+import ntpath
 import os
 import shutil
 import sys
@@ -148,14 +149,20 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
         "@echo off\n"
         "setlocal\n"
         f'set "KFF_PID={pid}"\n'
+        f'set "KFF_IMAGE={ntpath.basename(exe_path)}"\n'
         f'set "KFF_CURRENT={current_dir}"\n'
         f'set "KFF_NEW={new_dir}"\n'
         f'set "KFF_EXE={exe_path}"\n'
         'set "KFF_BAK=%KFF_CURRENT%.bak"\n'
+        'set "KFF_TRIES=0"\n'
         "\n"
         ":waitloop\n"
-        'tasklist /FI "PID eq %KFF_PID%" 2>nul | find "%KFF_PID%" >nul\n'
+        "rem PID는 재사용될 수 있어 이미지명까지 함께 확인한다.\n"
+        'tasklist /FI "PID eq %KFF_PID%" /FI "IMAGENAME eq %KFF_IMAGE%" 2>nul | find "%KFF_PID%" >nul\n'
         "if errorlevel 1 goto swap\n"
+        "set /a KFF_TRIES+=1\n"
+        "rem 최대 3분 대기 후에는 진행한다. 잠겨 있으면 move 실패→롤백된다.\n"
+        "if %KFF_TRIES% GEQ 180 goto swap\n"
         "timeout /t 1 /nobreak >nul\n"
         "goto waitloop\n"
         "\n"
