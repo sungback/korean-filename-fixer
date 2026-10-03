@@ -194,6 +194,23 @@ class BatchTests(unittest.TestCase):
         self.assertIn(":waitcap", content)
         self.assertIn("rollback", content)
 
+    def test_batch_reads_tasklist_from_file_not_pipe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            batch_path = os.path.join(tmp, "update.bat")
+            write_update_batch(
+                batch_path, 14552,
+                r"C:\App\KoreanFilenameFixer",
+                r"C:\Temp\KFF_new\KoreanFilenameFixer",
+                r"C:\App\KoreanFilenameFixer\KoreanFilenameFixer.exe",
+            )
+            with open(batch_path, encoding="ascii") as f:
+                content = f.read()
+
+        # find가 파이프가 아닌 파일을 읽어야 키보드 대기가 구조적으로 불가능하다
+        self.assertNotIn("| find", content)
+        self.assertIn("KFF_WAIT", content)
+        self.assertIn('find "%KFF_PID%" "%KFF_WAIT%"', content)
+
     def test_batch_filters_by_image_and_caps_wait(self):
         with tempfile.TemporaryDirectory() as tmp:
             batch_path = os.path.join(tmp, "update.bat")
