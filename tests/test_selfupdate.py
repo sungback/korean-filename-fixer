@@ -253,12 +253,19 @@ class BatchTests(unittest.TestCase):
             with open(batch_path, encoding="utf-8") as f:
                 content = f.read()
 
-        self.assertIn("for /L %%i in (1,1,3)", content)
+        self.assertIn("for /L %%i in (1,1,5)", content)
         self.assertIn("KFF_NEW_EXE", content)
         self.assertIn("move-aside failed", content)
         self.assertIn("move-in failed", content)
         self.assertIn("rollback-ok exe restored", content)
         self.assertIn("rollback-FAILED", content)
+        # move 실패 사유는 진단용으로 로그에 남긴다 (원인 추적).
+        self.assertIn(
+            'move "%KFF_CURRENT%" "%KFF_BAK%" >> "%KFF_LOG%" 2>&1',
+            content)
+        self.assertIn(
+            'move "%KFF_NEW%" "%KFF_CURRENT%" >> "%KFF_LOG%" 2>&1',
+            content)
 
 
 class BatchSafetyTests(unittest.TestCase):
