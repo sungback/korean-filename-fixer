@@ -698,7 +698,7 @@ class UpdateDownloadTests(unittest.TestCase):
         app = self.make_download_app()
 
         with patch("gui.App._self_update_target",
-                   return_value=("/install", "/install/app.exe")):
+                   return_value=("dir", "/install", "/install/app.exe")):
             with patch("gui.download_update", return_value="/tmp/staging/a.zip"):
                 with patch("gui.fetch_text", return_value="badhash  a.zip"):
                     with patch("gui.verify_sha256", return_value=False):
@@ -713,7 +713,7 @@ class UpdateDownloadTests(unittest.TestCase):
         app = self.make_download_app()
 
         with patch("gui.App._self_update_target",
-                   return_value=("/install", "/install/app.exe")):
+                   return_value=("dir", "/install", "/install/app.exe")):
             with patch("gui.staging_dir", return_value="/tmp/staging"):
                 with patch("gui.download_update", return_value="/tmp/staging/a.zip"):
                     with patch("gui.fetch_text", return_value="good  a.zip"):
@@ -723,8 +723,30 @@ class UpdateDownloadTests(unittest.TestCase):
 
         self.assertEqual(
             app._cmd_queue.get_nowait(),
-            ("update_download_done", "v9.9.9", "/tmp/staging/app",
+            ("update_download_done", "v9.9.9", "dir", "/tmp/staging/app",
              "/install", "/tmp/staging"),
+        )
+        app.after.assert_not_called()
+
+    def test_run_update_download_uses_mac_asset_for_app_target(self):
+        app = self.make_download_app()
+
+        with patch("gui.App._self_update_target",
+                   return_value=("app", "/Applications/KFF.app", "/Applications")):
+            with patch("gui.staging_dir", return_value="/tmp/staging"):
+                with patch("gui.download_update", return_value="/tmp/staging/a.zip") as dl:
+                    with patch("gui.fetch_text", return_value="good  a.zip"):
+                        with patch("gui.verify_sha256", return_value=True):
+                            with patch("gui.extract_mac_app",
+                                        return_value="/tmp/staging/KFF.app") as ex:
+                                app._run_update_download("v9.9.9")
+
+        self.assertIn("macOS", dl.call_args.args[0])
+        ex.assert_called_once()
+        self.assertEqual(
+            app._cmd_queue.get_nowait(),
+            ("update_download_done", "v9.9.9", "app", "/tmp/staging/KFF.app",
+             "/Applications/KFF.app", "/tmp/staging"),
         )
         app.after.assert_not_called()
 
@@ -751,10 +773,11 @@ class UpdateDownloadTests(unittest.TestCase):
         app._update_check_in_progress = True
 
         with patch("gui.App._self_update_target",
-                   return_value=("/install", "/install/app.exe")):
+                   return_value=("dir", "/install", "/install/app.exe")):
             with patch("gui.messagebox.askyesno", return_value=False):
                 with patch("gui.cleanup_staging") as cleanup:
-                    app._on_update_download_done("v9.9.9", "/new", "/install", "/staging")
+                    app._on_update_download_done(
+                        "v9.9.9", "dir", "/new", "/install", "/staging")
 
         cleanup.assert_called_once_with("/staging")
         self.assertIn("취소", app.status_var.set.call_args.args[0])
@@ -764,12 +787,12 @@ class UpdateDownloadTests(unittest.TestCase):
         app._update_check_in_progress = True
 
         with patch("gui.App._self_update_target",
-                   return_value=("/install", "/install/app.exe")):
+                   return_value=("dir", "/install", "/install/app.exe")):
             with patch("gui.messagebox.askyesno", return_value=True):
                 with patch("gui.write_update_batch") as write_batch:
                     with patch("gui.subprocess") as subprocess_mock:
                         app._on_update_download_done(
-                            "v9.9.9", "/new", "/install", "/staging")
+                            "v9.9.9", "dir", "/new", "/install", "/staging")
 
         write_batch.assert_called_once()
         args, _kwargs = write_batch.call_args
@@ -777,6 +800,46 @@ class UpdateDownloadTests(unittest.TestCase):
         self.assertEqual(args[3], "/new")
         subprocess_mock.Popen.assert_called_once()
         app._quit_app.assert_called_once()
+
+    def test_on_update_download_done_writes_script_for_mac_target(self):
+        app = self.make_download_app()
+        app._update_check_in_progress = True
+
+        with patch("gui.App._self_update_target",
+                   return_value=("app", "/Applications/KFF.app", "/Applications")):
+            with patch("gui.messagebox.askyesno", return_value=True):
+                with patch("gui.verify_bundle", return_value=True):
+                    with patch("gui.write_mac_update_script") as write_script:
+                        with patch("gui.subprocess") as subprocess_mock:
+                            app._on_update_download_done(
+                                "v9.9.9", "app", "/tmp/staging/KFF.app",
+                                "/Applications/KFF.app", "/tmp/staging")
+
+        write_script.assert_called_once()
+        args, _kwargs = write_script.call_args
+        self.assertEqual(args[2], "/Applications/KFF.app")
+        self.assertEqual(args[3], "/tmp/staging/KFF.app")
+        launched = subprocess_mock.Popen.call_args.args[0]
+        self.assertEqual(launched[:2], ["/bin/bash", args[0]])
+        app._quit_app.assert_called_once()
+
+    def test_on_update_download_done_aborts_mac_when_verify_fails(self):
+        app = self.make_download_app()
+        app._update_check_in_progress = True
+
+        with patch("gui.App._self_update_target",
+                   return_value=("app", "/Applications/KFF.app", "/Applications")):
+            with patch("gui.messagebox.askyesno", return_value=True):
+                with patch("gui.verify_bundle", return_value=False):
+                    with patch("gui.messagebox.showwarning") as warning:
+                        with patch("gui.write_mac_update_script") as write_script:
+                            app._on_update_download_done(
+                                "v9.9.9", "app", "/tmp/staging/KFF.app",
+                                "/Applications/KFF.app", "/tmp/staging")
+
+        warning.assert_called_once()
+        write_script.assert_not_called()
+        app._quit_app.assert_not_called()
 
     def test_on_update_check_done_offers_auto_install_on_windows(self):
         app = self.make_download_app()
@@ -819,13 +882,14 @@ class UpdateDownloadTests(unittest.TestCase):
         app._on_update_download_failed = Mock()
         app._on_update_download_progress = Mock()
         app._cmd_queue.put(("update_download_progress", 100, 200))
-        app._cmd_queue.put(("update_download_done", "v9", "/new", "/i", "/s"))
+        app._cmd_queue.put(("update_download_done", "v9", "dir", "/new", "/i", "/s"))
         app._cmd_queue.put(("update_download_failed", "boom"))
 
         app._poll_queue()
 
         app._on_update_download_progress.assert_called_once_with(100, 200)
-        app._on_update_download_done.assert_called_once_with("v9", "/new", "/i", "/s")
+        app._on_update_download_done.assert_called_once_with(
+            "v9", "dir", "/new", "/i", "/s")
         app._on_update_download_failed.assert_called_once_with("boom")
 
 

@@ -1,17 +1,18 @@
 """
 selfupdate.py
-Windows 배치 도우미 기반 자동 교체 모듈 (C-1안).
+분리 도우미 기반 자동 교체 모듈 (Windows 배치 + macOS bash).
 
-실행 중인 exe는 Windows 파일 잠금 때문에 자신을 덮어쓸 수 없으므로,
-배치 스크립트를 %TEMP%에 생성해 앱 종료 후 폴더 단위(onedir 전체) 교체를 수행한다.
-macOS는 대상이 아니다 (브라우저 다운로드 유지).
+실행 중인 앱은 자신을 덮어쓸 수 없으므로, 도우미 스크립트를 만들어
+앱 종료 후 교체한다. Windows는 폴더 단위(onedir), macOS는 .app 번들 단위다.
 """
 
 import hashlib
 import logging
 import ntpath
 import os
+import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -22,6 +23,10 @@ from updater import ssl_context
 WINDOWS_ZIP_NAME = "KoreanFilenameFixer-Windows.zip"
 WINDOWS_EXE_NAME = "KoreanFilenameFixer.exe"
 UPDATE_BATCH_NAME = "kff_self_update.bat"
+
+MACOS_ZIP_NAME = "KoreanFilenameFixer-macOS.zip"
+MACOS_APP_SUFFIX = ".app"
+MAC_UPDATE_SCRIPT_NAME = "kff_self_update.sh"
 
 DOWNLOAD_TIMEOUT = 120.0
 DOWNLOAD_CHUNK_SIZE = 65536
@@ -211,3 +216,87 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
     with open(batch_path, "w", encoding="ascii", errors="replace", newline="") as f:
         f.write(content)
     return batch_path
+
+
+# ─── macOS (.app 번들) ────────────────────────────────────────
+
+def current_macos_app() -> str | None:
+    """실행 중인 .app 번들 경로를 반환한다. 개발 실행이면 None."""
+    if sys.platform != "darwin" or not getattr(sys, "frozen", False):
+        return None
+    dirpath = os.path.dirname(os.path.abspath(sys.executable))
+    while dirpath and dirpath != os.path.dirname(dirpath):
+        if dirpath.endswith(MACOS_APP_SUFFIX) and os.path.isdir(dirpath):
+            return dirpath
+        dirpath = os.path.dirname(dirpath)
+    return None
+
+
+def extract_mac_app(zip_path: str, staging_dir: str) -> str:
+    """zip을 풀고 .app 번들 경로를 반환한다 (가장 얕은 것 우선)."""
+    with zipfile.ZipFile(zip_path) as archive:
+        archive.extractall(staging_dir)
+    candidates = []
+    for root, dirs, _files in os.walk(staging_dir):
+        for dirname in dirs:
+            if dirname.endswith(MACOS_APP_SUFFIX):
+                candidates.append(os.path.join(root, dirname))
+    if not candidates:
+        raise FileNotFoundError(f"업데이트 압축본에 .app 없음: {zip_path}")
+    candidates.sort(key=lambda p: p.count(os.sep))
+    return candidates[0]
+
+
+def verify_bundle(app_path: str) -> bool:
+    """codesign strict 검증을 통과하면 True. 실패해도 호출側이 판단한다."""
+    try:
+        result = subprocess.run(
+            ["codesign", "--verify", "--deep", "--strict", app_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=60,
+        )
+        return result.returncode == 0
+    except Exception as e:
+        logging.warning(f"번들 검증 실패: {e}")
+        return False
+
+
+def write_mac_update_script(script_path: str, pid: int, current_app: str,
+                            new_app: str,
+                            cleanup_paths: list[str] | None = None) -> str:
+    """종료 대기→.bak 회전→스왑→quarantine 제거→reopen bash 스크립트를 생성한다."""
+    q = shlex.quote
+    cleanup_lines = "\n".join(
+        f'rm -rf {q(p)} 2>/dev/null' for p in cleanup_paths or []
+    )
+    log_path = script_path + ".log"
+    lines = [
+        "#!/bin/bash",
+        f'KFF_PID={pid}',
+        f'KFF_CURRENT={q(current_app)}',
+        f'KFF_NEW={q(new_app)}',
+        f'KFF_LOG={q(log_path)}',
+        "",
+        'echo "$(date) self-update start pid=$KFF_PID" > "$KFF_LOG"',
+        'while kill -0 "$KFF_PID" 2>/dev/null; do sleep 0.2; done',
+        "sleep 0.5",
+        'echo "$(date) swap start" >> "$KFF_LOG"',
+        'KFF_BAK="${KFF_CURRENT}.bak"',
+        'rm -rf "$KFF_BAK"',
+        'mv "$KFF_CURRENT" "$KFF_BAK" || { echo "move-aside failed" >> "$KFF_LOG"; exit 1; }',
+        'mv "$KFF_NEW" "$KFF_CURRENT" || { echo "move-in failed, restoring" >> "$KFF_LOG"; mv "$KFF_BAK" "$KFF_CURRENT"; exit 1; }',
+        "xattr -dr com.apple.quarantine \"$KFF_CURRENT\" 2>/dev/null || true",
+        'open "$KFF_CURRENT"',
+        cleanup_lines,
+        'echo "$(date) done" >> "$KFF_LOG"',
+        'rm -f "$0"',
+    ]
+    content = "\n".join(line for line in lines if line != "") + "\n"
+    parent = os.path.dirname(script_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(script_path, "w", encoding="utf-8", newline="") as f:
+        f.write(content)
+    os.chmod(script_path, 0o755)
+    return script_path

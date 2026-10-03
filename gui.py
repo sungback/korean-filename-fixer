@@ -110,20 +110,26 @@ from updater import (
     should_check,
 )
 from selfupdate import (
+    MACOS_ZIP_NAME,
+    MAC_UPDATE_SCRIPT_NAME,
     UPDATE_BATCH_NAME,
     WINDOWS_ZIP_NAME,
     checksum_url,
     cleanup_staging,
     current_exe_path,
     current_install_dir,
+    current_macos_app,
     download_update,
+    extract_mac_app,
     extract_update,
     fetch_text,
     is_writable_dir,
     parse_checksum,
     release_asset_url,
     staging_dir,
+    verify_bundle,
     verify_sha256,
+    write_mac_update_script,
     write_update_batch,
 )
 
@@ -1141,16 +1147,28 @@ class App(_AppBase):
 
     @staticmethod
     def _self_update_target():
-        """자동 교체 가능하면 (install_dir, exe_path), 아니면 None."""
-        if sys.platform != "win32":
-            return None
-        install_dir = current_install_dir()
-        if not install_dir:
-            return None
-        exe_path = current_exe_path(install_dir)
-        if not os.path.isfile(exe_path) or not is_writable_dir(install_dir):
-            return None
-        return (install_dir, exe_path)
+        """자동 교체 가능하면 (kind, 경로, 기준경로), 아니면 None.
+
+        kind "dir": Windows onedir (설치폴더, exe경로).
+        kind "app": macOS .app 번들 (번들경로, 부모폴더).
+        """
+        if sys.platform == "win32":
+            install_dir = current_install_dir()
+            if not install_dir:
+                return None
+            exe_path = current_exe_path(install_dir)
+            if not os.path.isfile(exe_path) or not is_writable_dir(install_dir):
+                return None
+            return ("dir", install_dir, exe_path)
+        if sys.platform == "darwin":
+            app_path = current_macos_app()
+            if not app_path:
+                return None
+            parent = os.path.dirname(app_path)
+            if not is_writable_dir(parent):
+                return None
+            return ("app", app_path, parent)
+        return None
 
     def _can_self_update(self) -> bool:
         return self._self_update_target() is not None
@@ -1178,11 +1196,12 @@ class App(_AppBase):
             self._cmd_queue.put(
                 ("update_download_failed", "교체할 설치 위치를 찾을 수 없습니다."))
             return
-        _install_dir, _exe_path = target
-        asset_url = release_asset_url(GITHUB_REPO, tag)
+        kind = target[0]
+        asset_name = WINDOWS_ZIP_NAME if kind == "dir" else MACOS_ZIP_NAME
+        asset_url = release_asset_url(GITHUB_REPO, tag, asset_name)
         staging = staging_dir()
         try:
-            zip_path = os.path.join(staging, WINDOWS_ZIP_NAME)
+            zip_path = os.path.join(staging, asset_name)
             download_update(asset_url, zip_path,
                             progress_callback=self._download_progress_callback())
             checksum_text = fetch_text(checksum_url(asset_url))
@@ -1191,9 +1210,12 @@ class App(_AppBase):
                     ("update_download_failed",
                      "다운로드 검증 실패(체크섬 불일치). 다시 시도하세요."))
                 return
-            new_dir = extract_update(zip_path, staging)
+            if kind == "dir":
+                new_path = extract_update(zip_path, staging)
+            else:
+                new_path = extract_mac_app(zip_path, staging)
             self._cmd_queue.put(
-                ("update_download_done", tag, new_dir, _install_dir, staging))
+                ("update_download_done", tag, kind, new_path, target[1], staging))
         except Exception as e:
             cleanup_staging(staging)
             self._cmd_queue.put(("update_download_failed", f"다운로드 실패: {e}"))
@@ -1207,21 +1229,31 @@ class App(_AppBase):
             self.status_var.set(
                 f"업데이트 다운로드 중... {downloaded / 1048576:.1f} MB")
 
-    def _on_update_download_done(self, tag: str, new_dir: str,
-                                 install_dir: str, staging: str):
+    def _on_update_download_done(self, tag: str, kind: str, new_path: str,
+                                 place: str, staging: str):
         self._update_check_in_progress = False
         self.btn_update.config(state="normal")
         target = self._self_update_target()
-        if target is None:
+        if target is None or target[0] != kind:
             cleanup_staging(staging)
             self.status_var.set("업데이트 설치 실패: 설치 위치 확인 불가")
             return
-        _install_dir, exe_path = target
         if not messagebox.askyesno(
                 "업데이트", f"{tag} 다운로드 완료. 지금 종료하고 설치하시겠습니까?"):
             cleanup_staging(staging)
             self.status_var.set("업데이트 설치 취소됨")
             return
+        if kind == "dir":
+            if not self._prepare_windows_swap(tag, new_path, target, staging):
+                return
+        else:
+            if not self._prepare_mac_swap(tag, new_path, target, staging):
+                return
+        self._quit_app()
+
+    def _prepare_windows_swap(self, tag: str, new_dir: str, target,
+                              staging: str) -> bool:
+        _kind, install_dir, exe_path = target
         zip_path = os.path.join(staging, WINDOWS_ZIP_NAME)
         batch_path = os.path.join(tempfile.gettempdir(), UPDATE_BATCH_NAME)
         try:
@@ -1231,23 +1263,51 @@ class App(_AppBase):
         except Exception as e:
             cleanup_staging(staging)
             messagebox.showwarning("업데이트", f"설치 준비 실패: {e}")
-            return
+            return False
         self._log(f"업데이트 설치 시작: {tag} — 앱을 종료하고 교체합니다.", "info")
         try:
-            if sys.platform == "win32":
-                subprocess.Popen(
-                    ["cmd", "/c", batch_path],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
-                )
-            else:
-                subprocess.Popen([batch_path])
+            subprocess.Popen(
+                ["cmd", "/c", batch_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
+            )
         except Exception as e:
             cleanup_staging(staging)
             self._log(f"업데이트 설치 실행 실패: {e}", "error")
-            return
-        self._quit_app()
+            return False
+        return True
+
+    def _prepare_mac_swap(self, tag: str, new_app: str, target,
+                          staging: str) -> bool:
+        _kind, app_path, _parent = target
+        if not verify_bundle(new_app):
+            cleanup_staging(staging)
+            messagebox.showwarning("업데이트", "다운로드한 앱 서명 검증 실패. 설치를 중단합니다.")
+            return False
+        zip_path = os.path.join(staging, MACOS_ZIP_NAME)
+        script_path = os.path.join(tempfile.gettempdir(), MAC_UPDATE_SCRIPT_NAME)
+        try:
+            write_mac_update_script(script_path, os.getpid(), app_path,
+                                    new_app,
+                                    cleanup_paths=[zip_path, staging])
+        except Exception as e:
+            cleanup_staging(staging)
+            messagebox.showwarning("업데이트", f"설치 준비 실패: {e}")
+            return False
+        self._log(f"업데이트 설치 시작: {tag} — 앱을 종료하고 교체합니다.", "info")
+        try:
+            subprocess.Popen(
+                ["/bin/bash", script_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as e:
+            cleanup_staging(staging)
+            self._log(f"업데이트 설치 실행 실패: {e}", "error")
+            return False
+        return True
 
     def _on_update_download_failed(self, reason: str):
         self._update_check_in_progress = False

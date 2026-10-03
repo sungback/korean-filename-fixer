@@ -72,4 +72,18 @@ GitHub Releases API로 최신 버전을 확인하고, 새 버전이 있으면 �
 
 ## 범위 밖
 
-- macOS 자동 교체, 델타 업데이트, `--onefile` 전환 (별도 검토)
+- 델타 업데이트, `--onefile` 전환 (별도 검토)
+
+---
+
+# D안: macOS DIY 자동 교체 — 작업 목록
+
+Windows 배치와 같은 구조의 bash 도우미. zip 다운로드 → 옆에 스테이징 →
+분리 bash가 PID 종료 대기(`kill -0`) → `mv` 스왑 → quarantine 제거 → `open` 재실행.
+
+- [x] `selfupdate.py`에 mac 함수 추가 (추출·검증·bash 스크립트)
+- [x] `gui.py` 플랫폼 분기 (mac 자동설치·검증·실행)
+- [x] mac 테스트 + 기존 테스트 형태 업데이트
+- [x] 가짜 번들로 실제 스왑 e2e 검증 (이 Mac에서 직접 실행)
+- [ ] `pytest` + `unittest discover` + `build.sh` + 앱 실행
+- [ ] 기능 추가이므로 minor 버전 업 후 태그·푸시 (`v1.16.0`)

@@ -7,13 +7,16 @@ import zipfile
 from unittest.mock import MagicMock, patch
 
 from selfupdate import (
+    MACOS_ZIP_NAME,
     WINDOWS_EXE_NAME,
     WINDOWS_ZIP_NAME,
     checksum_url,
     cleanup_staging,
     current_exe_path,
     current_install_dir,
+    current_macos_app,
     download_update,
+    extract_mac_app,
     extract_update,
     fetch_text,
     is_writable_dir,
@@ -21,7 +24,9 @@ from selfupdate import (
     parse_checksum,
     release_asset_url,
     staging_dir,
+    verify_bundle,
     verify_sha256,
+    write_mac_update_script,
     write_update_batch,
 )
 
@@ -34,6 +39,10 @@ class UrlTests(unittest.TestCase):
             "https://github.com/owner/repo/releases/download/v1.15.0/"
             + WINDOWS_ZIP_NAME,
         )
+
+    def test_release_asset_url_accepts_mac_zip(self):
+        url = release_asset_url("owner/repo", "v1.15.0", MACOS_ZIP_NAME)
+        self.assertTrue(url.endswith(MACOS_ZIP_NAME))
 
     def test_latest_asset_url_uses_latest(self):
         url = latest_asset_url("owner/repo")
@@ -229,6 +238,86 @@ class BatchTests(unittest.TestCase):
         # 무한 대기 방지: 최대 시도 후 진행
         self.assertIn("KFF_TRIES", content)
         self.assertIn("GEQ 180", content)
+
+
+class MacUpdateTests(unittest.TestCase):
+    def test_current_macos_app_is_none_when_not_frozen(self):
+        self.assertFalse(getattr(sys, "frozen", False))
+        with patch("sys.platform", "darwin"):
+            self.assertIsNone(current_macos_app())
+
+    def test_current_macos_app_finds_bundle_ancestor(self):
+        exe = "/Applications/KFF.app/Contents/MacOS/KFF"
+        with patch("sys.platform", "darwin"):
+            with patch.object(sys, "frozen", True, create=True):
+                with patch.object(sys, "executable", exe):
+                    with patch("os.path.isdir", return_value=True):
+                        self.assertEqual(current_macos_app(), "/Applications/KFF.app")
+
+    def test_current_macos_app_is_none_off_darwin(self):
+        with patch("sys.platform", "win32"):
+            with patch.object(sys, "frozen", True, create=True):
+                self.assertIsNone(current_macos_app())
+
+    def test_extract_mac_app_returns_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = os.path.join(tmp, MACOS_ZIP_NAME)
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("KoreanFilenameFixer.app/Contents/MacOS/KFF", "exe")
+            result = extract_mac_app(zip_path, os.path.join(tmp, "staging"))
+            self.assertTrue(result.endswith(".app"))
+            self.assertTrue(os.path.isdir(result))
+
+    def test_extract_mac_app_raises_without_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = os.path.join(tmp, MACOS_ZIP_NAME)
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("readme.txt", "hi")
+            with self.assertRaises(FileNotFoundError):
+                extract_mac_app(zip_path, os.path.join(tmp, "staging"))
+
+    def test_verify_bundle_calls_codesign_strict(self):
+        with patch("selfupdate.subprocess.run") as run:
+            run.return_value.returncode = 0
+            self.assertTrue(verify_bundle("/Applications/KFF.app"))
+            args = run.call_args.args[0]
+            self.assertEqual(args[:4], ["codesign", "--verify", "--deep", "--strict"])
+
+    def test_verify_bundle_returns_false_on_failure(self):
+        with patch("selfupdate.subprocess.run",
+                   side_effect=Exception("no codesign")):
+            self.assertFalse(verify_bundle("/Applications/KFF.app"))
+
+    def test_mac_script_uses_lf_and_is_executable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script_path = os.path.join(tmp, "update.sh")
+            write_mac_update_script(
+                script_path, 4242,
+                "/Applications/KFF.app", "/tmp/staging/KFF.app")
+            with open(script_path, "rb") as f:
+                raw = f.read()
+            self.assertTrue(os.access(script_path, os.X_OK))
+        self.assertIn(b"\n", raw)
+        self.assertNotIn(b"\r\n", raw)
+
+    def test_mac_script_waits_swaps_strips_and_reopens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script_path = os.path.join(tmp, "update.sh")
+            write_mac_update_script(
+                script_path, 4242,
+                "/Applications/My KFF.app", "/tmp/staging/KFF.app",
+                cleanup_paths=[os.path.join(tmp, "a.zip")],
+            )
+            with open(script_path, encoding="utf-8") as f:
+                content = f.read()
+
+        self.assertIn("#!/bin/bash", content)
+        self.assertIn('kill -0 "$KFF_PID"', content)
+        self.assertIn("4242", content)
+        self.assertIn("com.apple.quarantine", content)
+        self.assertIn('open "$KFF_CURRENT"', content)
+        self.assertIn(".bak", content)
+        self.assertIn("a.zip", content)
 
 
 if __name__ == "__main__":
