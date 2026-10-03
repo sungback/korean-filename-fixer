@@ -54,7 +54,7 @@ class GuiTests(unittest.TestCase):
                     ):
                         app._load_config()
 
-        self.assertEqual(app._get_folders(), ["/Users/back/내 드라이브"])
+        self.assertEqual(app._get_folders(), [os.path.abspath("/Users/back/내 드라이브")])
         app._start_startup_scan.assert_not_called()
         app._start_watch.assert_called_once_with()
         app.status_var.set.assert_any_call("시작 시 자동 스캔 건너뜀 — 감시는 정상적으로 시작합니다.")
@@ -83,7 +83,7 @@ class GuiTests(unittest.TestCase):
                 with patch("gui.os.path.isdir", return_value=True):
                     app._load_config()
 
-        self.assertEqual(app._get_folders(), ["/tmp/a", "/tmp/b"])
+        self.assertEqual(app._get_folders(), [os.path.abspath("/tmp/a"), os.path.abspath("/tmp/b")])
         app._start_watch.assert_called_once_with()
 
     def test_run_preview_queues_completion_without_calling_tk_from_worker(self):
