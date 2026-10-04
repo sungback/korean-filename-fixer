@@ -75,8 +75,10 @@ def is_nfd(name: str) -> bool:
 
 
 def should_ignore_name(name: str) -> bool:
-    """저장 중 생성되는 임시 파일명은 변환 대상에서 제외한다."""
+    """저장 중 생성되는 임시 파일명 및 리더 선출 제어 파일은 변환 대상에서 제외한다."""
     if name.startswith("__nfc_tmp_") and name.endswith("__"):
+        return True
+    if name == ".kff_leader.json" or name.startswith(".kff_leader.json.tmp."):
         return True
     return _IGNORED_TEMP_NAME_RE.search(name) is not None
 

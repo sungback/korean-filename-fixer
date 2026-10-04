@@ -103,6 +103,7 @@ from autostart import (
     needs_autostart_refresh,
 )
 from watcher import FolderWatcher
+from leader import LeaderManager
 from version import APP_VERSION, GITHUB_REPO
 from updater import (
     fetch_latest_release,
@@ -157,7 +158,12 @@ class App(_AppBase):
 
         self._queue: queue.Queue = queue.Queue()
         self._cmd_queue: queue.Queue = queue.Queue()
-        self.watcher = FolderWatcher(callback=self._queue.put)
+        self.multi_machine_var = tk.BooleanVar(value=True)
+        self.leader_manager = LeaderManager(on_role_change=self._on_leader_role_change)
+        self.watcher = FolderWatcher(
+            callback=self._queue.put,
+            is_active_predicate=self._is_folder_active,
+        )
         self._folders: list[str] = []
         self._dark = self._is_dark_mode()
         self._poll_after_id = None
@@ -358,6 +364,13 @@ class App(_AppBase):
             command=self._on_notify_toggle,
         ).pack(side="left", padx=(12, 0))
 
+        tk.Checkbutton(
+            frame,
+            text="다중 기기 조율 (Active-Standby)",
+            variable=self.multi_machine_var,
+            command=self._on_multi_machine_toggle,
+        ).pack(side="left", padx=(12, 0))
+
     def _build_button_row(self):
         """감시 제어 버튼 행을 구성한다."""
         frame = tk.Frame(self)
@@ -454,6 +467,8 @@ class App(_AppBase):
             self.exclude_var.set(self._format_exclude_patterns(exclude_patterns))
             self.scan_on_startup_var.set(bool(data.get("scan_on_startup", True)))
             self.notify_on_convert_var.set(bool(data.get("notify_on_convert", True)))
+            if "multi_machine_var" in self.__dict__:
+                self.multi_machine_var.set(bool(data.get("multi_machine_coordination", True)))
             self._last_update_check = float(data.get("last_update_check", 0.0) or 0.0)
             self._sync_autostart_state()
             raw_folders = data.get("folders")
@@ -497,6 +512,7 @@ class App(_AppBase):
                     "exclude_patterns": self._get_exclude_patterns(),
                     "scan_on_startup": self.scan_on_startup_var.get(),
                     "notify_on_convert": self.notify_on_convert_var.get(),
+                    "multi_machine_coordination": self.multi_machine_var.get() if "multi_machine_var" in self.__dict__ else True,
                     "last_update_check": self.__dict__.get("_last_update_check", 0.0),
                 }, f, ensure_ascii=False)
         else:
@@ -510,6 +526,18 @@ class App(_AppBase):
 
     def _on_scan_on_startup_toggle(self):
         if self.remember_var.get() and self._get_folders():
+            self._save_config()
+
+    def _on_multi_machine_toggle(self):
+        if self.remember_var.get() and self._get_folders():
+            self._save_config()
+        if self.watcher.is_running:
+            if self.multi_machine_var.get():
+                self.leader_manager.start(self._get_folders())
+            else:
+                self.leader_manager.stop()
+            self.status_var.set(self._watch_status_text())
+            self._update_tray_title(watching=True)
             self._save_config()
 
     def _sync_autostart_state(self):
@@ -597,6 +625,8 @@ class App(_AppBase):
             folders = self._get_folders()
             try:
                 self.watcher.start_many(folders, self._get_exclude_patterns())
+                if self.multi_machine_var.get():
+                    self.leader_manager.start(folders)
                 self.status_var.set(self._watch_status_text())
                 self._log(f"제외 패턴 적용: {self._exclude_patterns_text()}", "info")
             except Exception as e:
@@ -620,13 +650,52 @@ class App(_AppBase):
         self.btn_preview.config(state="disabled" if running else "normal")
         self.btn_once.config(state="disabled" if running else "normal")
 
+    def _is_folder_active(self, path: str) -> bool:
+        """다중 기기 모드가 켜져 있는 경우 해당 경로가 속한 폴더에서 자신이 Active인지 확인한다."""
+        if not self.multi_machine_var.get():
+            return True
+        return self.leader_manager.is_folder_active(path)
+
+    def _on_leader_role_change(self, folder: str, is_leader: bool, leader_host: str):
+        """백그라운드 스레드에서 리더 역할 변경 감지 시 UI 큐로 전달한다."""
+        self._cmd_queue.put(("leader_role_change", folder, is_leader, leader_host))
+
+    def _on_leader_role_change_dispatched(self, folder: str, is_leader: bool, leader_host: str):
+        """UI 메인 스레드에서 다중 기기 역할 변경을 처리한다."""
+        folder_name = os.path.basename(folder) or folder
+        if is_leader:
+            self._log(f"다중 기기 역할 변경: Active (변환 주도 기기 - {folder_name})", "info")
+        else:
+            self._log(f"다중 기기 역할 변경: Standby (대기 중, 현재 리더: {leader_host} - {folder_name})", "info")
+
+        if self.watcher.is_running:
+            self.status_var.set(self._watch_status_text())
+            self._update_tray_title(watching=True)
+
     def _watch_status_text(self) -> str:
         folders = self._get_folders()
         if not folders:
             return "폴더를 선택하세요."
+
+        if not self.multi_machine_var.get():
+            if len(folders) == 1:
+                return f"감시 중: {folders[0]}"
+            return f"감시 중: {len(folders)}개 폴더"
+
+        # 다중 기기 모드 활성화 시 상태 표시
         if len(folders) == 1:
-            return f"감시 중: {folders[0]}"
-        return f"감시 중: {len(folders)}개 폴더"
+            is_leader, leader_host = self.leader_manager.get_role_info(folders[0])
+            role_desc = "Active" if is_leader else f"Standby (리더: {leader_host})"
+            return f"감시 중 [{role_desc}]: {folders[0]}"
+
+        active_count = sum(1 for f in folders if self.leader_manager.is_folder_active(f))
+        if active_count == len(folders):
+            role_desc = "Active"
+        elif active_count == 0:
+            role_desc = "Standby"
+        else:
+            role_desc = f"Active {active_count}/{len(folders)}"
+        return f"감시 중 [{role_desc}]: {len(folders)}개 폴더"
 
     # ─── 폴더 선택 및 감시 제어 ──────────────────────────────
 
@@ -707,6 +776,8 @@ class App(_AppBase):
         exclude_patterns = self._get_exclude_patterns()
         try:
             self.watcher.start_many(folders, exclude_patterns)
+            if self.multi_machine_var.get():
+                self.leader_manager.start(folders)
         except Exception as e:
             self.status_var.set(f"감시 시작 실패: {e}")
             self._log(f"오류: {e}", "error")
@@ -725,6 +796,7 @@ class App(_AppBase):
             self._stop_watch()
 
     def _stop_watch(self):
+        self.leader_manager.stop()
         self.watcher.stop()
         self.btn_start.config(state="normal")
         self.btn_stop.config(state="disabled")
@@ -1059,6 +1131,8 @@ class App(_AppBase):
                 self._watch_paused_for_operation = False
                 return
             self.watcher.start_many(targets, self._get_exclude_patterns())
+            if self.multi_machine_var.get():
+                self.leader_manager.start(targets)
             self.btn_start.config(state="disabled")
             self.btn_stop.config(state="normal")
             self.status_var.set(self._watch_status_text())
@@ -1374,6 +1448,8 @@ class App(_AppBase):
                 self._on_update_download_done(*args)
             elif action == "update_download_failed":
                 self._on_update_download_failed(*args)
+            elif action == "leader_role_change":
+                self._on_leader_role_change_dispatched(*args)
             return
 
         if cmd == "start":
@@ -1432,6 +1508,8 @@ class App(_AppBase):
                 self._status_item.button().setTitle_("K!")
             try:
                 self.watcher.start_many(folders, self._get_exclude_patterns())
+                if self.multi_machine_var.get():
+                    self.leader_manager.start(folders)
                 self.status_var.set(self._watch_status_text())
                 self._log("감시 재시작 완료.", "info")
                 self._update_tray_title(watching=True)
@@ -1546,7 +1624,14 @@ class App(_AppBase):
         """감시 상태에 따라 메뉴바 아이콘 텍스트를 변경한다."""
         if not _APPKIT or not hasattr(self, "_status_item"):
             return
-        title = "K●" if watching else "K"
+        if not watching:
+            title = "K"
+        elif self.multi_machine_var.get():
+            folders = self._get_folders()
+            has_active = any(self.leader_manager.is_folder_active(f) for f in folders) if folders else True
+            title = "K●" if has_active else "K○"
+        else:
+            title = "K●"
         self._status_item.button().setTitle_(title)
 
     def _update_tray_menu_state(self, watching: bool):
@@ -1569,6 +1654,7 @@ class App(_AppBase):
         self._shutting_down = True
         if self._startup_scan_cancel_event is not None:
             self._startup_scan_cancel_event.set()
+        self.leader_manager.stop()
         self.watcher.stop()
         for attr in ("_poll_after_id", "_health_check_after_id", "_watcher_notify_after_id"):
             after_id = getattr(self, attr, None)
