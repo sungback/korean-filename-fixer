@@ -460,6 +460,54 @@ def plan_file(filepath: str) -> ConvertResult:
     return ConvertResult(new_path, original_name, nfc_name, "preview")
 
 
+def _safe_rollback(src: str, tmp: str, dst: str):
+    """임시 파일이 남아있으면 원본 또는 대상 경로로 복구를 시도한다."""
+    try:
+        _rollback_tmp(src, tmp, dst=dst)
+    except Exception:
+        pass
+
+
+def _check_peer_converted(
+    filepath: str,
+    dirpath: str,
+    name: str,
+    nfc_name: str,
+    new_path: str,
+    wait_sync: bool = False,
+) -> ConvertResult | None:
+    """다른 기기나 프로세스가 이미 NFD→NFC 변환을 완료했는지 확인한다."""
+    if _drivefs_needs_server_rename(filepath, nfc_name):
+        return None
+
+    if wait_sync:
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() <= deadline:
+            matches = _get_actual_entry_names(dirpath, nfc_name)
+            if any(not is_nfd(m) for m in matches):
+                logging.info(f"Already converted by peer: {name!r} → {nfc_name!r}")
+                return ConvertResult(new_path, name, nfc_name, "skipped")
+            time.sleep(0.05)
+
+        matches = _get_actual_entry_names(dirpath, nfc_name)
+        if not any(is_nfd(m) for m in matches):
+            logging.info(f"Source file disappeared: {name!r}")
+            return ConvertResult(filepath, name, nfc_name, "skipped")
+        return None
+
+    matches = _get_actual_entry_names(dirpath, nfc_name)
+    has_nfd = any(is_nfd(m) for m in matches)
+    has_nfc = any(not is_nfd(m) for m in matches)
+
+    if not has_nfd and has_nfc:
+        logging.info(f"Already converted by peer: {name!r} → {nfc_name!r}")
+        return ConvertResult(new_path, name, nfc_name, "skipped")
+    if not has_nfd and not has_nfc:
+        logging.info(f"Source file disappeared: {name!r}")
+        return ConvertResult(filepath, name, nfc_name, "skipped")
+    return None
+
+
 def convert_file(
     filepath: str,
     retry: int = 5,
@@ -480,16 +528,9 @@ def convert_file(
         return plan
 
     # 변환 직전 실제 엔트리 재확인 (다른 기기/프로세스가 이미 변환했는지 확인)
-    if not _drivefs_needs_server_rename(filepath, nfc_name):
-        matches = _get_actual_entry_names(dirpath, nfc_name)
-        has_nfd = any(is_nfd(m) for m in matches)
-        has_nfc = any(not is_nfd(m) for m in matches)
-        if not has_nfd and has_nfc:
-            logging.info(f"Already converted by peer: {name!r} → {nfc_name!r}")
-            return ConvertResult(new_path, name, nfc_name, "skipped")
-        if not has_nfd and not has_nfc:
-            logging.info(f"Source file disappeared: {name!r}")
-            return ConvertResult(filepath, name, nfc_name, "skipped")
+    peer_res = _check_peer_converted(filepath, dirpath, name, nfc_name, new_path)
+    if peer_res is not None:
+        return peer_res
 
     # UUID로 tmp 경로를 고유하게 만들어 동시 변환 시 충돌을 방지한다
     tmp_path = os.path.join(dirpath, f"__nfc_tmp_{uuid.uuid4().hex[:8]}__")
@@ -507,58 +548,34 @@ def convert_file(
             return ConvertResult(new_path, name, nfc_name, "converted")
 
         except FileNotFoundError:
-            try:
-                _rollback_tmp(filepath, tmp_path, dst=new_path)
-            except Exception:
-                pass
-            # 다른 기기/프로세스가 이미 변환을 진행 중이거나 완료했는지 확인
-            if not _drivefs_needs_server_rename(filepath, nfc_name):
-                deadline = time.monotonic() + 0.5
-                while time.monotonic() <= deadline:
-                    matches = _get_actual_entry_names(dirpath, nfc_name)
-                    if any(not is_nfd(m) for m in matches):
-                        logging.info(f"Already converted by peer: {name!r} → {nfc_name!r}")
-                        return ConvertResult(new_path, name, nfc_name, "skipped")
-                    time.sleep(0.05)
-
-                matches = _get_actual_entry_names(dirpath, nfc_name)
-                if not any(is_nfd(m) for m in matches):
-                    logging.info(f"Source file disappeared: {name!r}")
-                    return ConvertResult(filepath, name, nfc_name, "skipped")
+            _safe_rollback(filepath, tmp_path, dst=new_path)
+            peer_res = _check_peer_converted(
+                filepath, dirpath, name, nfc_name, new_path, wait_sync=True
+            )
+            if peer_res is not None:
+                return peer_res
 
         except PermissionError:
-            try:
-                _rollback_tmp(filepath, tmp_path, dst=new_path)
-            except Exception:
-                pass
-            # 재시도 전 다른 기기가 변환을 마쳤는지 확인
-            if not _drivefs_needs_server_rename(filepath, nfc_name):
-                matches = _get_actual_entry_names(dirpath, nfc_name)
-                if not any(is_nfd(m) for m in matches) and any(not is_nfd(m) for m in matches):
-                    logging.info(f"Converted by peer during retry: {name!r} → {nfc_name!r}")
-                    return ConvertResult(new_path, name, nfc_name, "skipped")
+            _safe_rollback(filepath, tmp_path, dst=new_path)
+            peer_res = _check_peer_converted(filepath, dirpath, name, nfc_name, new_path)
+            if peer_res is not None:
+                return peer_res
             logging.warning(f"File locked, retrying ({attempt + 1}/{retry}): {filepath}")
             time.sleep(retry_interval)
 
         except Exception as e:
-            try:
-                _rollback_tmp(filepath, tmp_path, dst=new_path)
-            except Exception:
-                pass
-            if not _drivefs_needs_server_rename(filepath, nfc_name):
-                matches = _get_actual_entry_names(dirpath, nfc_name)
-                if not any(is_nfd(m) for m in matches) and any(not is_nfd(m) for m in matches):
-                    logging.info(f"Converted by peer after error: {name!r} → {nfc_name!r}")
-                    return ConvertResult(new_path, name, nfc_name, "skipped")
+            _safe_rollback(filepath, tmp_path, dst=new_path)
+            peer_res = _check_peer_converted(filepath, dirpath, name, nfc_name, new_path)
+            if peer_res is not None:
+                return peer_res
             logging.error(f"Error converting {filepath}: {e}")
             result_path = new_path if _path_exists(new_path) else filepath
             return ConvertResult(result_path, name, nfc_name, "error", str(e))
 
     # retry 소진 후 최종 확인
-    if not _drivefs_needs_server_rename(filepath, nfc_name):
-        matches = _get_actual_entry_names(dirpath, nfc_name)
-        if not any(is_nfd(m) for m in matches) and any(not is_nfd(m) for m in matches):
-            return ConvertResult(new_path, name, nfc_name, "skipped")
+    peer_res = _check_peer_converted(filepath, dirpath, name, nfc_name, new_path)
+    if peer_res is not None:
+        return peer_res
 
     msg = f"{retry}회 재시도 후 실패"
     logging.error(f"Failed to convert {filepath}: {msg}")
