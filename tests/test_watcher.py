@@ -299,26 +299,6 @@ class FolderWatcherTests(unittest.TestCase):
             self.assertEqual(watcher.watched_folders, [])
             self.assertFalse(watcher.is_running)
 
-    def test_handle_skips_when_is_active_predicate_returns_false(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            captured = []
-            handler = NFDHandler(
-                captured.append,
-                wait_for_stable=False,
-                synchronous=True,
-                is_active_predicate=lambda path: False,  # Standby 상태 시뮬레이션
-            )
-
-            original_path = os.path.join(tmp, nfd_name("대기중_한글.txt"))
-            with open(original_path, "w", encoding="utf-8") as f:
-                f.write("standby")
-
-            handler._handle(original_path, is_directory=False)
-
-            # Standby 기기이므로 변환을 수행하지 않아야 함
-            self.assertEqual(captured, [])
-            self.assertTrue(os.path.exists(original_path))
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -62,12 +62,10 @@ class NFDHandler(FileSystemEventHandler):
         settle_delay: float | None = None,
         wait_for_stable: bool = True,
         synchronous: bool = False,
-        is_active_predicate: Callable[[str], bool] | None = None,
     ):
         super().__init__()
         self.callback = callback
         self.exclude_patterns = clean_exclude_patterns(exclude_patterns)
-        self.is_active_predicate = is_active_predicate
         if settle_delay is None:
             self.settle_delay = self._SETTLE_DELAY + _get_machine_jitter_offset()
             self._use_jitter = True
@@ -133,9 +131,6 @@ class NFDHandler(FileSystemEventHandler):
         return False
 
     def _handle(self, path: str, is_directory: bool):
-        if self.is_active_predicate is not None and not self.is_active_predicate(path):
-            return
-
         if should_exclude_path(path, self.exclude_patterns, is_directory=is_directory):
             return
 
@@ -273,13 +268,8 @@ class NFDHandler(FileSystemEventHandler):
 class FolderWatcher:
     """폴더 감시의 시작/중지를 관리한다. GUI에서 이 클래스만 사용하면 된다."""
 
-    def __init__(
-        self,
-        callback: Callable,
-        is_active_predicate: Callable[[str], bool] | None = None,
-    ):
+    def __init__(self, callback: Callable):
         self.callback = callback
-        self.is_active_predicate = is_active_predicate
         self.exclude_patterns: list[str] = []
         self._watched_folders: list[str] = []
         self._observer = None
@@ -316,11 +306,7 @@ class FolderWatcher:
                 logging.warning(f"Watch skipped (not a directory): {path}")
             if unique and not existing:
                 raise NotADirectoryError(f"감시할 폴더가 존재하지 않습니다: {unique[0]}")
-            handler = NFDHandler(
-                self.callback,
-                self.exclude_patterns,
-                is_active_predicate=self.is_active_predicate,
-            )
+            handler = NFDHandler(self.callback, self.exclude_patterns)
             self._observer = self._make_observer()
             self._handler = handler
             scheduled: list[str] = []

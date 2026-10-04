@@ -17,13 +17,12 @@ macOS에서 한글 파일명을 NFD → NFC로 변환해 Windows/Linux와의 호
 | `main.py` | 진입점 — 로깅 초기화 후 App 실행 |
 | `converter.py` | NFD→NFC 변환 로직 (파일/폴더, `folder_after_results` 포함) |
 | `watcher.py` | 실시간 폴더 감시 (NFDHandler, FolderWatcher) |
-| `leader.py` | 다중 기기 Active-Standby 리더 선출 및 하트비트 조율 |
 | `gui.py` | tkinter GUI, 트레이 아이콘, 설정 저장 |
 | `autostart.py` | 로그인 시 자동 시작 등록/해제 (LaunchAgent / 레지스트리) |
 | `updater.py` | GitHub 최신 릴리스 확인 (버전 비교, 캐시 간격) |
 | `selfupdate.py` | 인앱 자체 업데이트 (다운로드·sha256 검증, Windows 배치 / macOS bash 스왑 스크립트 생성) |
 | `version.py` | `APP_VERSION` 단일 출처 (릴리스 태그와 동일 값) |
-| `tests/` | pytest 테스트 스위트 (test_converter, test_watcher, test_leader, test_gui, test_autostart, test_updater, test_selfupdate) |
+| `tests/` | pytest 테스트 스위트 (test_converter, test_watcher, test_gui, test_autostart, test_updater, test_selfupdate) |
 | `scripts/smoke_google_drive.py` | Google Drive 실폴더 수동 스모크 테스트 |
 | `docs/macos-signing-notarization.md` | macOS Developer ID 서명·공증 준비 문서 |
 
@@ -41,10 +40,10 @@ bash build.sh
 - **미리보기(드라이런)**: 실제 변환 전에 예정 이름과 충돌 여부를 계산해 로그로 확인 가능
 - **시작 시 자동 스캔**: 저장된 감시 폴더가 있으면 앱 시작 직후 누락된 NFD 파일을 한 번 정리한 뒤 감시 시작
   - 단, 동기화 루트 또는 5000개 초과 큰 폴더로 보이면 자동 스캔은 건너뛰고 실시간 감시만 시작
-- **다중 기기 Active-Standby 조율**: 동일 공유 폴더를 여러 기기가 감시할 때 분산 경합 방지
-  - `.kff_leader.json` 원자적 교환 및 10초 하트비트, 30초 무응답 시 자동 승계
-  - Active 기기만 실시간 변환을 주도하고, Standby 기기는 리더 생존 여부만 관찰
-  - 메뉴바 트레이 아이콘(`K●`: Active / `K○`: Standby) 및 상태바에 실시간 역할 표시
+- **다중 기기 동시 감시 안전성 (Host Jitter + APFS 바이트 검사)**: 공유 폴더를 여러 기기가 감시할 때 분산 충돌 방지
+  - 공유 폴더에 불필요한 제어 파일/하트비트를 남기지 않아 클라우드(Google Drive) 동기화 충돌 복사본 ` (1).json` 원천 방지
+  - 기기별 호스트명 해시 기반 지터 오프셋(`0.5s` ~ `1.0s`)으로 변환 시작 시점 분산
+  - 변환 직전 및 rename 실패 시 APFS/SMB 실제 디스크 엔트리(`_get_actual_entry_names`)를 확인하여, 상대 기기가 이미 변환했으면 조용히 `skipped` 처리
 - **로그인 시 자동 시작**: macOS는 LaunchAgent plist, Windows는 Run 레지스트리로 로그인 후 앱 자동 실행 지원 (`.app` / `.exe` 배포 실행 기준)
 - **제외 패턴**: `.git`, `node_modules`, `venv` 등 디렉터리 패턴은 일괄 변환과 실시간 감시 모두에서 공통 적용
 - **이벤트 중복 방지**: FSEvents가 동일 파일 이벤트를 연속 발생시키므로 `_DEDUP_WINDOW=0.2s` 적용
@@ -64,7 +63,7 @@ bash build.sh
 git tag vX.X.X && git push origin main && git push origin vX.X.X
 ```
 
-- 태그 규칙: `v{major}.{minor}.{patch}` — 최신 `v1.18.0`
+- 태그 규칙: `v{major}.{minor}.{patch}` — 최신 `v1.18.1`
 - 기능 추가: minor 버전 업, 버그 수정/리팩토링: patch 버전 업
 - **릴리스 태그와 `version.py`의 `APP_VERSION`은 항상 같은 값으로 함께 bump**
 - **창 제목은 `APP_VERSION`을 그대로 표시하므로 릴리스마다 제목을 손으로 바꾸지 않는다**
