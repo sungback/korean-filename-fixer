@@ -7,11 +7,15 @@ watchdog의 기본 Observer를 사용하고,
 macOS에서는 기본 Observer가 FSEvents 기반으로 동작한다.
 """
 
+import hashlib
 import logging
 import os
-import time
+import random
+import socket
 import threading
+import time
 import unicodedata
+import uuid
 from typing import Callable
 
 from watchdog.events import FileSystemEventHandler
@@ -24,6 +28,21 @@ from converter import (
     should_exclude_path,
     should_ignore_name,
 )
+
+
+def _get_machine_jitter_offset() -> float:
+    """호스트명 및 하드웨어 식별자 기반으로 기기별 고유 딜레이 오프셋(0.0~0.8초)을 계산한다.
+
+    2대 이상의 기기가 동일 공유 폴더를 감시할 때 이벤트 처리 타이밍을 분산시켜
+    동시 변환 충돌을 방지한다.
+    """
+    try:
+        ident = f"{socket.gethostname()}-{uuid.getnode()}"
+        val = int(hashlib.md5(ident.encode("utf-8")).hexdigest()[:4], 16)
+        # 5개 슬롯 중 하나 선택 (0.0s, 0.2s, 0.4s, 0.6s, 0.8s)
+        return (val % 5) * 0.2
+    except Exception:
+        return 0.0
 
 
 class NFDHandler(FileSystemEventHandler):
@@ -47,7 +66,12 @@ class NFDHandler(FileSystemEventHandler):
         super().__init__()
         self.callback = callback
         self.exclude_patterns = clean_exclude_patterns(exclude_patterns)
-        self.settle_delay = self._SETTLE_DELAY if settle_delay is None else settle_delay
+        if settle_delay is None:
+            self.settle_delay = self._SETTLE_DELAY + _get_machine_jitter_offset()
+            self._use_jitter = True
+        else:
+            self.settle_delay = settle_delay
+            self._use_jitter = False
         self.wait_for_stable = wait_for_stable
         self.synchronous = synchronous
         self._recent: dict[str, float] = {}
@@ -134,7 +158,8 @@ class NFDHandler(FileSystemEventHandler):
             self._convert_path(path, is_directory)
             return
 
-        due_at = time.monotonic() + self.settle_delay
+        jitter = random.uniform(0.0, 0.1) if self._use_jitter else 0.0
+        due_at = time.monotonic() + self.settle_delay + jitter
         with self._pending_condition:
             if self._closed:
                 return
@@ -182,6 +207,12 @@ class NFDHandler(FileSystemEventHandler):
             return
 
         if self._is_closed():
+            return
+
+        # 안정화 대기 시간 동안 상대 Mac이 이미 변환했거나 파일이 삭제되었는지 재확인
+        actual_path = self._resolve_actual_path(path)
+        actual_name = os.path.basename(actual_path)
+        if not _path_exists(actual_path) or not self._should_convert_path(actual_path, actual_name):
             return
 
         result = convert_file(actual_path, stop_event=self._stop_event)

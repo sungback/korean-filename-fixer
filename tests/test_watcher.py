@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from converter import ConvertResult
-from watcher import FolderWatcher, NFDHandler
+from watcher import FolderWatcher, NFDHandler, _get_machine_jitter_offset
 
 
 def nfd_name(text: str) -> str:
@@ -213,6 +213,33 @@ class WatcherTests(unittest.TestCase):
             self.assertEqual(len(captured_stop_events), 1)
             self.assertTrue(captured_stop_events[0].is_set())
             self.assertFalse(handler._worker.is_alive())
+
+    def test_get_machine_jitter_offset_returns_valid_slot(self):
+        offset = _get_machine_jitter_offset()
+        self.assertIn(round(offset, 2), [0.0, 0.2, 0.4, 0.6, 0.8])
+
+    def test_handler_uses_machine_jitter_when_settle_delay_is_none(self):
+        handler = NFDHandler(lambda r: None, synchronous=True)
+        expected_base = NFDHandler._SETTLE_DELAY + _get_machine_jitter_offset()
+        self.assertAlmostEqual(handler.settle_delay, expected_base)
+        self.assertTrue(handler._use_jitter)
+
+    def test_convert_path_skips_when_peer_converted_during_wait(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            captured = []
+            handler = self.make_handler(captured.append)
+
+            # 상대 기기가 이미 NFC로 변환한 파일만 존재하는 상태
+            nfc_path = os.path.join(tmp, "상대기기변환.txt")
+            with open(nfc_path, "w", encoding="utf-8") as f:
+                f.write("content")
+
+            # 핸들러에 NFD 경로 이벤트가 전달되어도, 디스크가 이미 NFC면 변환을 건너뛰어야 함
+            nfd_path = os.path.join(tmp, nfd_name("상대기기변환.txt"))
+            with patch("watcher.convert_file") as mock_convert:
+                handler._convert_path(nfd_path, is_directory=False)
+                mock_convert.assert_not_called()
+            self.assertEqual(captured, [])
 
 
 class FolderWatcherTests(unittest.TestCase):

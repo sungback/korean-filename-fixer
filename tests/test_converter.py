@@ -21,6 +21,8 @@ from converter import (
     should_run_startup_scan,
     startup_scan_skip_reason,
     STARTUP_SCAN_ENTRY_LIMIT,
+    _rollback_tmp,
+    _get_actual_entry_names,
 )
 
 
@@ -429,6 +431,68 @@ class ConverterTests(unittest.TestCase):
 
             self.assertEqual(statuses["예정.txt"], "preview")
             self.assertEqual(statuses["already-nfc.txt"], "skipped")
+
+    def test_plan_file_skips_when_source_missing_and_nfc_already_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # 원본 NFD 파일명으로 경로를 지정하되, 디스크에는 이미 상대 기기에 의해 NFC 파일만 존재하는 상황
+            nfc_path = os.path.join(tmp, "동시변환.txt")
+            with open(nfc_path, "w", encoding="utf-8") as f:
+                f.write("peer-converted")
+
+            nfd_path = os.path.join(tmp, nfd_name("동시변환.txt"))
+            # APFS에서는 nfd_path로 접근해도 nfc_path를 가리킬 수 있으므로 실제 엔트리 검사 동작 확인
+            result = plan_file(nfd_path)
+            self.assertEqual(result.status, "skipped")
+
+    def test_convert_file_skips_when_peer_already_converted_to_nfc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            nfc_path = os.path.join(tmp, "동시변환2.txt")
+            with open(nfc_path, "w", encoding="utf-8") as f:
+                f.write("peer-converted")
+
+            nfd_path = os.path.join(tmp, nfd_name("동시변환2.txt"))
+            result = convert_file(nfd_path)
+            self.assertEqual(result.status, "skipped")
+
+    def test_convert_file_handles_concurrent_peer_conversion_during_rename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            nfc_path = os.path.join(tmp, "동시경쟁.txt")
+            nfd_path = os.path.join(tmp, nfd_name("동시경쟁.txt"))
+            with open(nfd_path, "w", encoding="utf-8") as f:
+                f.write("competing")
+
+            real_rename = os.rename
+
+            def peer_wins_rename(src, dst):
+                # src를 tmp로 rename하려는 순간 다른 기기가 이미 nfc로 변환 완료했다고 시뮬레이션
+                if os.path.basename(src) == nfd_name("동시경쟁.txt"):
+                    # 실제 디스크의 파일을 nfc_path로 변경하고 FileNotFoundError 발생
+                    real_rename(src, nfc_path)
+                    raise FileNotFoundError("simulated peer won race")
+                return real_rename(src, dst)
+
+            with patch("converter.os.rename", side_effect=peer_wins_rename):
+                result = convert_file(nfd_path, retry=1, retry_interval=0)
+
+            self.assertEqual(result.status, "skipped")
+            self.assertTrue(os.path.exists(nfc_path))
+
+    def test_rollback_tmp_cleans_tmp_when_target_already_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, nfd_name("원본.txt"))
+            tmp_file = os.path.join(tmp, "__nfc_tmp_test123__")
+            dst = os.path.join(tmp, "원본.txt")
+
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                f.write("tmp")
+            with open(dst, "w", encoding="utf-8") as f:
+                f.write("dst")
+
+            # dst가 이미 존재하는 상태에서 rollback 시도하면 tmp만 깔끔하게 제거되어야 함
+            _rollback_tmp(src, tmp_file, dst=dst)
+
+            self.assertFalse(os.path.exists(tmp_file))
+            self.assertTrue(os.path.exists(dst))
 
 
 class IgnoreNameTests(unittest.TestCase):
