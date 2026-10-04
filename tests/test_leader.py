@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import time
+from typing import Callable
 import unittest
 from unittest.mock import Mock, patch
 
@@ -115,6 +116,15 @@ class LeaderTests(unittest.TestCase):
             manager_a.stop()
             manager_b.stop()
 
+    @staticmethod
+    def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0, interval: float = 0.01) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(interval)
+        return predicate()
+
     def test_standby_takes_over_when_leader_stops(self):
         manager_a = LeaderManager(
             machine_id="mac-A",
@@ -134,14 +144,16 @@ class LeaderTests(unittest.TestCase):
             self.assertTrue(manager_a.is_folder_active(self.folder))
 
             manager_b.start([self.folder])
-            self.assertFalse(manager_b.is_folder_active(self.folder))
+            self.assertTrue(self._wait_until(lambda: not manager_b.is_folder_active(self.folder)))
 
             # A가 정상 종료 (리더 파일 삭제/해제)
             manager_a.stop()
 
-            # B의 다음 체크 주기 대기
-            time.sleep(0.15)
-            self.assertTrue(manager_b.is_folder_active(self.folder))
+            # B가 리더 승계할 때까지 대기
+            self.assertTrue(
+                self._wait_until(lambda: manager_b.is_folder_active(self.folder), timeout=2.0),
+                "Standby machine failed to take over leadership after leader stopped",
+            )
             is_leader, host = manager_b.get_role_info(self.folder)
             self.assertTrue(is_leader)
             self.assertEqual(host, "Host-B")
@@ -171,9 +183,11 @@ class LeaderTests(unittest.TestCase):
             # 처음에는 A가 활성으로 보여 Standby
             self.assertFalse(manager_b.is_folder_active(self.folder))
 
-            # 0.2초 이상 seq 갱신이 없으면 타임아웃으로 B가 리더 승계
-            time.sleep(0.35)
-            self.assertTrue(manager_b.is_folder_active(self.folder))
+            # 0.2초 타임아웃 경과 후 B가 리더 승계할 때까지 대기
+            self.assertTrue(
+                self._wait_until(lambda: manager_b.is_folder_active(self.folder), timeout=2.0),
+                "Standby machine failed to take over leadership after heartbeat timeout",
+            )
             is_leader, host = manager_b.get_role_info(self.folder)
             self.assertTrue(is_leader)
             self.assertEqual(host, "Host-B")
