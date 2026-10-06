@@ -574,7 +574,7 @@ class App(_AppBase):
         n = self._watcher_notify_count
         self._watcher_notify_count = 0
         if n > 0:
-            self._send_notification("Korean Filename Fixer3", f"{n}개 파일 변환 완료")
+            self._send_notification("Korean Filename Fixer", f"{n}개 파일 변환 완료")
 
     def _get_exclude_patterns(self) -> list[str]:
         return clean_exclude_patterns(self.exclude_var.get().split(","))
@@ -952,14 +952,11 @@ class App(_AppBase):
         self.status_var.set(summary)
         self._log(summary, "info")
         if converted and self.notify_on_convert_var.get():
-            self._send_notification("Korean Filename Fixer3", summary)
+            self._send_notification("Korean Filename Fixer", summary)
         self.btn_once.config(state="normal")
 
         updated = self._sync_folders_after_conversion(folders, results)
-        if resume_watch:
-            self._resume_watch(updated)
-        else:
-            self._watch_paused_for_operation = False
+        self._finish_operation(updated, resume_watch)
 
     def _on_batch_failed(self, folders, resume_watch: bool, error: str):
         """일괄 변환 실패 후 버튼 상태를 복구하고 필요하면 감시를 재개한다."""
@@ -967,10 +964,7 @@ class App(_AppBase):
         self._log(f"변환 실패: {error}", "error")
         self.btn_once.config(state="normal")
 
-        if resume_watch:
-            self._resume_watch(folders)
-        else:
-            self._watch_paused_for_operation = False
+        self._finish_operation(folders, resume_watch)
 
     def _on_preview_done(self, results: list, folders, resume_watch: bool):
         """미리보기 완료 후 결과를 표시하고 필요하면 감시를 재개한다."""
@@ -988,10 +982,7 @@ class App(_AppBase):
         self._log(summary, "info")
         self.btn_preview.config(state="normal")
 
-        if resume_watch:
-            self._resume_watch(folders)
-        else:
-            self._watch_paused_for_operation = False
+        self._finish_operation(folders, resume_watch)
 
     def _on_preview_failed(self, folders, resume_watch: bool, error: str):
         """미리보기 실패 후 버튼 상태를 복구하고 필요하면 감시를 재개한다."""
@@ -999,10 +990,7 @@ class App(_AppBase):
         self._log(f"미리보기 실패: {error}", "error")
         self.btn_preview.config(state="normal")
 
-        if resume_watch:
-            self._resume_watch(folders)
-        else:
-            self._watch_paused_for_operation = False
+        self._finish_operation(folders, resume_watch)
 
     def _on_startup_scan_done(self, results: list, folders):
         """시작 시 자동 스캔 완료 후 결과를 기록하고 감시를 시작한다."""
@@ -1021,7 +1009,7 @@ class App(_AppBase):
         self.status_var.set(summary)
         self._log(summary, "info")
         if converted and self.notify_on_convert_var.get():
-            self._send_notification("Korean Filename Fixer3", summary)
+            self._send_notification("Korean Filename Fixer", summary)
         self._set_startup_scan_running(False)
         self._sync_folders_after_conversion(folders, results)
         self._start_watch()
@@ -1052,6 +1040,13 @@ class App(_AppBase):
         self._log(f"시작 시 누락분 스캔 실패: {error}", "error")
         self._set_startup_scan_running(False)
         self._start_watch()
+
+    def _finish_operation(self, folders, resume_watch: bool):
+        """일괄 작업 종료 후 감시를 재개하거나 일시 중단 플래그를 해제한다."""
+        if resume_watch:
+            self._resume_watch(folders)
+        else:
+            self._watch_paused_for_operation = False
 
     def _resume_watch(self, folders=None):
         try:
