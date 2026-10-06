@@ -23,6 +23,7 @@ macOS에서 한글 파일명을 NFD → NFC로 변환해 Windows/Linux와의 호
 | `selfupdate.py` | 인앱 자체 업데이트 (다운로드·sha256 검증, Windows 배치 / macOS bash 스왑 스크립트 생성) |
 | `version.py` | `APP_VERSION` 단일 출처 (릴리스 태그와 동일 값) |
 | `tests/` | pytest 테스트 스위트 (test_converter, test_watcher, test_gui, test_autostart, test_updater, test_selfupdate) |
+| `AGENTS.md` | 프로젝트 규칙 단일 출처 (`CLAUDE.md`는 이 파일을 `@AGENTS.md`로 가져옴) |
 | `scripts/smoke_google_drive.py` | Google Drive 실폴더 수동 스모크 테스트 |
 | `docs/macos-signing-notarization.md` | macOS Developer ID 서명·공증 준비 문서 |
 
@@ -70,7 +71,7 @@ git tag vX.X.X && git push origin main && git push origin vX.X.X
 - **소스 기능 변경이 없을 때(문서, 설정 등)는 태그 없이 push만**
 
 ## 대화 관리
-- 재시작: `exit` → `Codex .` (`/clear`는 AGENTS.md·메모리를 재로드하지 않으므로 비권장)
+- 재시작: `exit` → 사용하는 CLI 재실행 (`/clear`는 AGENTS.md·메모리를 재로드하지 않으므로 비권장)
 - 컨텍스트 85% 이상이거나 작업 단위가 끝나면 새 대화 시작
 - 대화 종료: "마무리해줘" → 새 대화 시작: "메모리 읽고 현재 상태 파악해줘"
 
