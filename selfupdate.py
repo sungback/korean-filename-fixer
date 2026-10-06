@@ -276,6 +276,8 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
         'echo [%DATE% %TIME%] aside-failed CURRENT untouched >> "%KFF_LOG%"',
         "rem CURRENT는 멀쩡하므로 손대지 않는다. 이전 백업 위치만 원복한다.",
         'if not exist "%KFF_BAK%" if exist "%KFF_BAK_PREV%" move "%KFF_BAK_PREV%" "%KFF_BAK%" >nul 2>&1',
+        "rem 앱이 사라진 채 끝나지 않도록 멀쩡한 현행본을 다시 실행한다.",
+        'start "" /d "%KFF_CURRENT%" "%KFF_EXE%"',
         cleanup_lines.rstrip("\n"),
         'echo [%DATE% %TIME%] aside-failed exit >> "%KFF_LOG%"',
         'del "%~f0"',
@@ -299,6 +301,7 @@ def write_update_batch(batch_path: str, pid: int, current_dir: str,
         ":rollback_done",
         'if exist "%KFF_NEW_EXE%" echo [%DATE% %TIME%] rollback-ok exe restored >> "%KFF_LOG%"',
         'if not exist "%KFF_NEW_EXE%" echo [%DATE% %TIME%] rollback-FAILED manual restore from "%KFF_BAK%" >> "%KFF_LOG%"',
+        'if exist "%KFF_NEW_EXE%" start "" /d "%KFF_CURRENT%" "%KFF_EXE%"',
         'del "%~f0"',
         "exit /b 1",
     ]
@@ -373,7 +376,9 @@ def verify_bundle(app_path: str) -> bool:
 def write_mac_update_script(script_path: str, pid: int, current_app: str,
                             new_app: str,
                             cleanup_paths: list[str] | None = None) -> str:
-    """종료 대기→.bak 회전→스왑→quarantine 제거→reopen bash 스크립트를 생성한다."""
+    """종료 대기→.bak 회전→스왑→quarantine 제거→reopen→.bak 정리 bash 스크립트를 생성한다.
+
+실패 시에는 현행 앱을 다시 열어 앱이 사라진 채 끝나지 않게 한다."""
     q = shlex.quote
     cleanup_lines = "\n".join(
         f'rm -rf {q(p)} 2>/dev/null' for p in cleanup_paths or []
@@ -387,15 +392,22 @@ def write_mac_update_script(script_path: str, pid: int, current_app: str,
         f'KFF_LOG={q(log_path)}',
         "",
         'echo "$(date) self-update start pid=$KFF_PID" > "$KFF_LOG"',
-        'while kill -0 "$KFF_PID" 2>/dev/null; do sleep 0.2; done',
+        "KFF_TRIES=0",
+        'while kill -0 "$KFF_PID" 2>/dev/null; do',
+        "  KFF_TRIES=$((KFF_TRIES + 1))",
+        "  # 최대 3분 대기. 앱이 끝나지 않으면 구동 중인 앱을 건드리지 않고 중단한다.",
+        '  if [ "$KFF_TRIES" -ge 900 ]; then echo "$(date) wait cap reached, abort" >> "$KFF_LOG"; rm -f "$0"; exit 1; fi',
+        "  sleep 0.2",
+        "done",
         "sleep 0.5",
         'echo "$(date) swap start" >> "$KFF_LOG"',
         'KFF_BAK="${KFF_CURRENT}.bak"',
         'rm -rf "$KFF_BAK"',
-        'mv "$KFF_CURRENT" "$KFF_BAK" || { echo "move-aside failed" >> "$KFF_LOG"; exit 1; }',
-        'mv "$KFF_NEW" "$KFF_CURRENT" || { echo "move-in failed, restoring" >> "$KFF_LOG"; mv "$KFF_BAK" "$KFF_CURRENT"; exit 1; }',
+        'mv "$KFF_CURRENT" "$KFF_BAK" || { echo "move-aside failed" >> "$KFF_LOG"; open "$KFF_CURRENT"; exit 1; }',
+        'mv "$KFF_NEW" "$KFF_CURRENT" || { echo "move-in failed, restoring" >> "$KFF_LOG"; mv "$KFF_BAK" "$KFF_CURRENT"; open "$KFF_CURRENT"; exit 1; }',
         "xattr -dr com.apple.quarantine \"$KFF_CURRENT\" 2>/dev/null || true",
         'open "$KFF_CURRENT"',
+        'rm -rf "$KFF_BAK"',
         cleanup_lines,
         'echo "$(date) done" >> "$KFF_LOG"',
         'rm -f "$0"',
