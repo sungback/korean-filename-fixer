@@ -295,6 +295,18 @@ class BatchSafetyTests(unittest.TestCase):
         section = content.split(":aside_failed")[1].split("exit /b 1")[0]
         self.assertNotIn('rmdir /s /q "%KFF_CURRENT%"', section)
         self.assertIn("CURRENT untouched", section)
+        self.assertIn('start "" /d "%KFF_CURRENT%" "%KFF_EXE%"', section)
+
+    def test_rollback_success_relaunches_restored_app(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            content = self._write(
+                tmp,
+                r"C:\App\KoreanFilenameFixer",
+                r"C:\Temp\KFF_new\KoreanFilenameFixer",
+            )
+
+        section = content.split(":rollback_done")[1].split("exit /b 1")[0]
+        self.assertIn('start "" /d "%KFF_CURRENT%" "%KFF_EXE%"', section)
 
     def test_bak_is_rotated_instead_of_deleted(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -606,6 +618,45 @@ class MacUpdateTests(unittest.TestCase):
         self.assertIn('open "$KFF_CURRENT"', content)
         self.assertIn(".bak", content)
         self.assertIn("a.zip", content)
+
+    def test_mac_script_removes_bak_only_after_reopen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script_path = os.path.join(tmp, "update.sh")
+            write_mac_update_script(
+                script_path, 4242,
+                "/Applications/KFF.app", "/tmp/staging/KFF.app")
+            with open(script_path, encoding="utf-8") as f:
+                content = f.read()
+
+        self.assertGreater(content.rindex('rm -rf "$KFF_BAK"'),
+                           content.rindex('open "$KFF_CURRENT"'))
+
+    def test_mac_script_reopens_current_app_on_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script_path = os.path.join(tmp, "update.sh")
+            write_mac_update_script(
+                script_path, 4242,
+                "/Applications/KFF.app", "/tmp/staging/KFF.app")
+            with open(script_path, encoding="utf-8") as f:
+                content = f.read()
+
+        aside = [l for l in content.splitlines() if "move-aside failed" in l][0]
+        movein = [l for l in content.splitlines() if "move-in failed" in l][0]
+        self.assertIn('open "$KFF_CURRENT"', aside)
+        self.assertIn('open "$KFF_CURRENT"', movein)
+
+    def test_mac_script_wait_is_capped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script_path = os.path.join(tmp, "update.sh")
+            write_mac_update_script(
+                script_path, 4242,
+                "/Applications/KFF.app", "/tmp/staging/KFF.app")
+            with open(script_path, encoding="utf-8") as f:
+                content = f.read()
+
+        self.assertIn("wait cap reached", content)
+        self.assertLess(content.index("wait cap reached"),
+                        content.index("swap start"))
 
 
 if __name__ == "__main__":
