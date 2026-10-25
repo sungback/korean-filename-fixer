@@ -45,6 +45,8 @@ bash build.sh
   - 공유 폴더에 불필요한 제어 파일/하트비트를 남기지 않아 클라우드(Google Drive) 동기화 충돌 복사본 ` (1).json` 원천 방지
   - 기기별 호스트명 해시 기반 지터 오프셋(`0.5s` ~ `1.0s`)으로 변환 시작 시점 분산
   - 변환 직전 및 rename 실패 시 APFS/SMB 실제 디스크 엔트리(`_get_actual_entry_names`)를 확인하여, 상대 기기가 이미 변환했으면 조용히 `skipped` 처리
+- **롤백은 삭제하지 않고 보존**: 변환 실패 롤백 시 임시 엔트리(`__nfc_tmp_*__`)를 원래 이름으로 되돌릴 수 없으면(목적지가 이미 있음 등) 지우지 않고 `이름 (NFC 변환 보존 YYYY-MM-DD)`로 남긴다
+  - 공유 폴더에 파일을 남기지 않는 원칙의 예외 — 아직 동기화되지 않은 로컬 내용(폴더면 하위 파일 전체)이 `rmtree`로 사라지는 것을 막기 위함
 - **로그인 시 자동 시작**: macOS는 LaunchAgent plist, Windows는 Run 레지스트리로 로그인 후 앱 자동 실행 지원 (`.app` / `.exe` 배포 실행 기준)
 - **제외 패턴**: `.git`, `node_modules`, `venv` 등 디렉터리 패턴은 일괄 변환과 실시간 감시 모두에서 공통 적용
 - **이벤트 중복 방지**: FSEvents가 동일 파일 이벤트를 연속 발생시키므로 `_DEDUP_WINDOW=0.2s` 적용
@@ -64,7 +66,7 @@ bash build.sh
 git tag vX.X.X && git push origin main && git push origin vX.X.X
 ```
 
-- 태그 규칙: `v{major}.{minor}.{patch}` — 최신 `v1.18.3`
+- 태그 규칙: `v{major}.{minor}.{patch}` — 최신 `v1.18.4`
 - 기능 추가: minor 버전 업, 버그 수정/리팩토링: patch 버전 업
 - **릴리스 태그와 `version.py`의 `APP_VERSION`은 항상 같은 값으로 함께 bump**
 - **창 제목은 `APP_VERSION`을 그대로 표시하므로 릴리스마다 제목을 손으로 바꾸지 않는다**

@@ -477,7 +477,7 @@ class ConverterTests(unittest.TestCase):
             self.assertEqual(result.status, "skipped")
             self.assertTrue(os.path.exists(nfc_path))
 
-    def test_rollback_tmp_cleans_tmp_when_target_already_exists(self):
+    def test_rollback_tmp_preserves_tmp_when_target_already_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = os.path.join(tmp, nfd_name("원본.txt"))
             tmp_file = os.path.join(tmp, "__nfc_tmp_test123__")
@@ -488,11 +488,72 @@ class ConverterTests(unittest.TestCase):
             with open(dst, "w", encoding="utf-8") as f:
                 f.write("dst")
 
-            # dst가 이미 존재하는 상태에서 rollback 시도하면 tmp만 깔끔하게 제거되어야 함
-            _rollback_tmp(src, tmp_file, dst=dst)
+            # dst가 이미 존재해도 tmp 내용은 삭제하지 않고 보존용 이름으로 남겨야 함
+            with patch("converter.time.strftime", return_value="2026-10-26"):
+                _rollback_tmp(src, tmp_file, dst=dst)
 
+            preserved = os.path.join(tmp, "원본 (NFC 변환 보존 2026-10-26).txt")
             self.assertFalse(os.path.exists(tmp_file))
             self.assertTrue(os.path.exists(dst))
+            with open(preserved, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "tmp")
+
+    def test_rollback_tmp_preserves_directory_contents_when_target_already_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, nfd_name("공유폴더"))
+            tmp_dir = os.path.join(tmp, "__nfc_tmp_test456__")
+            dst = os.path.join(tmp, "공유폴더")
+
+            os.makedirs(tmp_dir)
+            with open(os.path.join(tmp_dir, "로컬전용.txt"), "w", encoding="utf-8") as f:
+                f.write("local only")
+            os.makedirs(dst)
+
+            with patch("converter.time.strftime", return_value="2026-10-26"):
+                _rollback_tmp(src, tmp_dir, dst=dst)
+
+            preserved = os.path.join(tmp, "공유폴더 (NFC 변환 보존 2026-10-26)")
+            self.assertFalse(os.path.exists(tmp_dir))
+            self.assertTrue(os.path.isdir(dst))
+            self.assertTrue(os.path.exists(os.path.join(preserved, "로컬전용.txt")))
+
+    def test_rollback_tmp_uses_unique_preserved_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, nfd_name("원본.txt"))
+            dst = os.path.join(tmp, "원본.txt")
+            with open(dst, "w", encoding="utf-8") as f:
+                f.write("dst")
+
+            with patch("converter.time.strftime", return_value="2026-10-26"):
+                for tmp_name in ("__nfc_tmp_aaa__", "__nfc_tmp_bbb__"):
+                    tmp_file = os.path.join(tmp, tmp_name)
+                    with open(tmp_file, "w", encoding="utf-8") as f:
+                        f.write(tmp_name)
+                    _rollback_tmp(src, tmp_file, dst=dst)
+
+            self.assertTrue(os.path.exists(os.path.join(tmp, "원본 (NFC 변환 보존 2026-10-26).txt")))
+            self.assertTrue(os.path.exists(os.path.join(tmp, "원본 (NFC 변환 보존 2026-10-26 2).txt")))
+
+    def test_convert_directory_timeout_with_peer_sync_keeps_local_only_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local_path = os.path.join(tmp, "공유폴더")
+            os.makedirs(local_path)
+            with open(os.path.join(local_path, "로컬전용.txt"), "w", encoding="utf-8") as f:
+                f.write("local only")
+
+            def wait_then_peer_arrives(path, expected_name, timeout=None, stop_event=None):
+                # tmp 단계 대기 중 피어의 NFC 폴더가 동기화되어 생긴 상황
+                os.makedirs(local_path, exist_ok=True)
+                return False
+
+            with patch("converter._drivefs_cloud_filename", return_value=nfd_name("공유폴더")):
+                with patch("converter._wait_for_drivefs_cloud_filename", side_effect=wait_then_peer_arrives):
+                    with patch("converter.time.strftime", return_value="2026-10-26"):
+                        result = convert_file(local_path, retry=1, retry_interval=0)
+
+            preserved = os.path.join(tmp, "공유폴더 (NFC 변환 보존 2026-10-26)")
+            self.assertEqual(result.status, "error")
+            self.assertTrue(os.path.exists(os.path.join(preserved, "로컬전용.txt")))
 
 
 class IgnoreNameTests(unittest.TestCase):

@@ -9,7 +9,6 @@ macOS는 한글 파일명을 NFD(자모 분해)로 저장하고, Windows/Linux�
 import logging
 import os
 import re
-import shutil
 import sqlite3
 import threading
 import time
@@ -358,11 +357,36 @@ def _path_exists(path: str) -> bool:
     return os.path.exists(path) or os.path.islink(path)
 
 
-def _remove_path(path: str):
-    if os.path.islink(path) or not os.path.isdir(path):
-        os.remove(path)
+def _preserved_path(dirpath: str, name: str, is_directory: bool) -> str:
+    """롤백 시 남길 보존용 경로를 만든다. 예: '원본 (NFC 변환 보존 2026-10-26).txt'"""
+    if is_directory:
+        stem, ext = name, ""
     else:
-        shutil.rmtree(path)
+        stem, ext = os.path.splitext(name)
+    label = f"NFC 변환 보존 {time.strftime('%Y-%m-%d')}"
+    candidate = os.path.join(dirpath, f"{stem} ({label}){ext}")
+    counter = 2
+    while _path_exists(candidate):
+        candidate = os.path.join(dirpath, f"{stem} ({label} {counter}){ext}")
+        counter += 1
+    return candidate
+
+
+def _preserve_tmp(tmp: str, base_name: str):
+    """임시 경로를 삭제하지 않고 보존용 이름으로 바꿔 남긴다.
+
+    tmp에는 원본 내용이 들어 있어 삭제하면 아직 동기화되지 않은 데이터가 사라질 수 있다.
+    이름 변경도 실패하면 tmp를 그대로 둔다.
+    """
+    nfc_base = unicodedata.normalize('NFC', base_name)
+    is_directory = os.path.isdir(tmp) and not os.path.islink(tmp)
+    preserved = _preserved_path(os.path.dirname(tmp), nfc_base, is_directory)
+    try:
+        os.rename(tmp, preserved)
+    except OSError as e:
+        logging.error(f"Rollback could not preserve {tmp!r}; left as is: {e}")
+        return
+    logging.warning(f"Rollback preserved original as {os.path.basename(preserved)!r}")
 
 
 def _get_actual_entry_names(dirpath: str, target_name: str) -> list[str]:
@@ -383,17 +407,18 @@ def _rollback_tmp(src: str, tmp: str, dst: str | None = None):
     """실패한 변환 시 임시 경로를 원상 복구하거나 정리한다."""
     if not _path_exists(tmp):
         return
-    # 목적지 파일이 이미 존재하면 (다른 기기 또는 직전 단계 완료) tmp만 삭제
+    base_name = os.path.basename(dst or src)
+    # 목적지가 이미 존재하면 (다른 기기가 먼저 변환) tmp를 지우지 않고 보존용 이름으로 남긴다
     if dst and _path_exists(dst):
-        _remove_path(tmp)
+        _preserve_tmp(tmp, base_name)
         return
     if _path_exists(src):
-        _remove_path(tmp)
+        _preserve_tmp(tmp, base_name)
     else:
         try:
             os.rename(tmp, src)
         except OSError:
-            _remove_path(tmp)
+            _preserve_tmp(tmp, base_name)
 
 
 def _find_conflicting_entry(filepath: str, converted_name: str) -> str:
