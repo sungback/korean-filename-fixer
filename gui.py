@@ -1462,6 +1462,10 @@ class App(_AppBase):
             self._stats["error"] += 1
             visual = nfd_to_visual(result.original)
             self._log(f"✗ {visual}  오류: {result.error}", "error")
+        if result.preserved:
+            # 롤백 중 원본을 지우지 않고 남겼으므로 사용자가 직접 비교·정리하도록 알린다
+            preserved_name = os.path.basename(result.preserved)
+            self._log(f"! 원본 보존: {preserved_name}  (변환본과 비교 후 정리하세요)", "conflict")
         self._refresh_stats()
 
     def _clear_log(self):

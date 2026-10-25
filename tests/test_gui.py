@@ -463,6 +463,24 @@ class CallbackTests(unittest.TestCase):
         self.assertIn("완료", status)
         self.assertIn("1", status)  # 변환 1개
 
+    def test_log_result_shows_preserved_name_even_when_skipped(self):
+        app = object.__new__(App)
+        app._stats = {"converted": 0, "conflict": 0, "error": 0}
+        app._log = Mock()
+        app._refresh_stats = Mock()
+        result = ConvertResult(
+            "/tmp/공유폴더", "공유폴더", "공유폴더", "skipped",
+            preserved="/tmp/공유폴더 (NFC 변환 보존 2026-10-26)",
+        )
+
+        App._log_result(app, result)
+
+        app._log.assert_called_once()
+        message, tag = app._log.call_args.args
+        self.assertIn("공유폴더 (NFC 변환 보존 2026-10-26)", message)
+        self.assertNotIn("/tmp/", message)
+        self.assertEqual(tag, "conflict")
+
     def test_on_batch_done_resumes_watch_when_flag_set(self):
         app = self._make_app({"btn_once": Mock()})
         app._on_batch_done([], ["/tmp/folder"], resume_watch=True)

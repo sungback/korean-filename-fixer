@@ -25,6 +25,7 @@ class ConvertResult:
     converted: str  # 변환 후 파일명
     status: str     # "converted" | "preview" | "conflict" | "skipped" | "error"
     error: str = ""
+    preserved: str = ""  # 롤백 중 보존용 이름으로 남긴 원본 경로 (없으면 빈 문자열)
 
 
 @dataclass(frozen=True)
@@ -372,11 +373,11 @@ def _preserved_path(dirpath: str, name: str, is_directory: bool) -> str:
     return candidate
 
 
-def _preserve_tmp(tmp: str, base_name: str):
-    """임시 경로를 삭제하지 않고 보존용 이름으로 바꿔 남긴다.
+def _preserve_tmp(tmp: str, base_name: str) -> str:
+    """임시 경로를 삭제하지 않고 보존용 이름으로 바꿔 남기고, 남긴 경로를 반환한다.
 
     tmp에는 원본 내용이 들어 있어 삭제하면 아직 동기화되지 않은 데이터가 사라질 수 있다.
-    이름 변경도 실패하면 tmp를 그대로 둔다.
+    이름 변경도 실패하면 tmp를 그대로 두고 tmp 경로를 반환한다.
     """
     nfc_base = unicodedata.normalize('NFC', base_name)
     is_directory = os.path.isdir(tmp) and not os.path.islink(tmp)
@@ -385,8 +386,9 @@ def _preserve_tmp(tmp: str, base_name: str):
         os.rename(tmp, preserved)
     except OSError as e:
         logging.error(f"Rollback could not preserve {tmp!r}; left as is: {e}")
-        return
+        return tmp
     logging.warning(f"Rollback preserved original as {os.path.basename(preserved)!r}")
+    return preserved
 
 
 def _get_actual_entry_names(dirpath: str, target_name: str) -> list[str]:
@@ -403,22 +405,21 @@ def _get_actual_entry_names(dirpath: str, target_name: str) -> list[str]:
     return matches
 
 
-def _rollback_tmp(src: str, tmp: str, dst: str | None = None):
-    """실패한 변환 시 임시 경로를 원상 복구하거나 정리한다."""
+def _rollback_tmp(src: str, tmp: str, dst: str | None = None) -> str:
+    """실패한 변환 시 임시 경로를 원상 복구한다. 보존용으로 남긴 경로가 있으면 반환한다."""
     if not _path_exists(tmp):
-        return
+        return ""
     base_name = os.path.basename(dst or src)
     # 목적지가 이미 존재하면 (다른 기기가 먼저 변환) tmp를 지우지 않고 보존용 이름으로 남긴다
     if dst and _path_exists(dst):
-        _preserve_tmp(tmp, base_name)
-        return
+        return _preserve_tmp(tmp, base_name)
     if _path_exists(src):
-        _preserve_tmp(tmp, base_name)
-    else:
-        try:
-            os.rename(tmp, src)
-        except OSError:
-            _preserve_tmp(tmp, base_name)
+        return _preserve_tmp(tmp, base_name)
+    try:
+        os.rename(tmp, src)
+    except OSError:
+        return _preserve_tmp(tmp, base_name)
+    return ""
 
 
 def _find_conflicting_entry(filepath: str, converted_name: str) -> str:
@@ -485,12 +486,19 @@ def plan_file(filepath: str) -> ConvertResult:
     return ConvertResult(new_path, original_name, nfc_name, "preview")
 
 
-def _safe_rollback(src: str, tmp: str, dst: str):
-    """임시 파일이 남아있으면 원본 또는 대상 경로로 복구를 시도한다."""
+def _safe_rollback(src: str, tmp: str, dst: str) -> str:
+    """임시 파일이 남아있으면 원본 또는 대상 경로로 복구를 시도한다. 보존 경로를 반환한다."""
     try:
-        _rollback_tmp(src, tmp, dst=dst)
+        return _rollback_tmp(src, tmp, dst=dst)
     except Exception:
-        pass
+        return ""
+
+
+def _with_preserved(result: ConvertResult, preserved: str) -> ConvertResult:
+    """롤백 중 보존본이 생겼으면 결과에 기록한다."""
+    if preserved:
+        result.preserved = preserved
+    return result
 
 
 def _check_peer_converted(
@@ -559,6 +567,7 @@ def convert_file(
 
     # UUID로 tmp 경로를 고유하게 만들어 동시 변환 시 충돌을 방지한다
     tmp_path = os.path.join(dirpath, f"__nfc_tmp_{uuid.uuid4().hex[:8]}__")
+    preserved = ""
 
     for attempt in range(retry):
         try:
@@ -573,38 +582,40 @@ def convert_file(
             return ConvertResult(new_path, name, nfc_name, "converted")
 
         except FileNotFoundError:
-            _safe_rollback(filepath, tmp_path, dst=new_path)
+            preserved = _safe_rollback(filepath, tmp_path, dst=new_path) or preserved
             peer_res = _check_peer_converted(
                 filepath, dirpath, name, nfc_name, new_path, wait_sync=True
             )
             if peer_res is not None:
-                return peer_res
+                return _with_preserved(peer_res, preserved)
 
         except PermissionError:
-            _safe_rollback(filepath, tmp_path, dst=new_path)
+            preserved = _safe_rollback(filepath, tmp_path, dst=new_path) or preserved
             peer_res = _check_peer_converted(filepath, dirpath, name, nfc_name, new_path)
             if peer_res is not None:
-                return peer_res
+                return _with_preserved(peer_res, preserved)
             logging.warning(f"File locked, retrying ({attempt + 1}/{retry}): {filepath}")
             time.sleep(retry_interval)
 
         except Exception as e:
-            _safe_rollback(filepath, tmp_path, dst=new_path)
+            preserved = _safe_rollback(filepath, tmp_path, dst=new_path) or preserved
             peer_res = _check_peer_converted(filepath, dirpath, name, nfc_name, new_path)
             if peer_res is not None:
-                return peer_res
+                return _with_preserved(peer_res, preserved)
             logging.error(f"Error converting {filepath}: {e}")
             result_path = new_path if _path_exists(new_path) else filepath
-            return ConvertResult(result_path, name, nfc_name, "error", str(e))
+            return _with_preserved(
+                ConvertResult(result_path, name, nfc_name, "error", str(e)), preserved
+            )
 
     # retry 소진 후 최종 확인
     peer_res = _check_peer_converted(filepath, dirpath, name, nfc_name, new_path)
     if peer_res is not None:
-        return peer_res
+        return _with_preserved(peer_res, preserved)
 
     msg = f"{retry}회 재시도 후 실패"
     logging.error(f"Failed to convert {filepath}: {msg}")
-    return ConvertResult(filepath, name, nfc_name, "error", msg)
+    return _with_preserved(ConvertResult(filepath, name, nfc_name, "error", msg), preserved)
 
 
 def _collect_entries(

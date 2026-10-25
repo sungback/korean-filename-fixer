@@ -490,9 +490,10 @@ class ConverterTests(unittest.TestCase):
 
             # dst가 이미 존재해도 tmp 내용은 삭제하지 않고 보존용 이름으로 남겨야 함
             with patch("converter.time.strftime", return_value="2026-10-26"):
-                _rollback_tmp(src, tmp_file, dst=dst)
+                returned = _rollback_tmp(src, tmp_file, dst=dst)
 
             preserved = os.path.join(tmp, "원본 (NFC 변환 보존 2026-10-26).txt")
+            self.assertEqual(returned, preserved)
             self.assertFalse(os.path.exists(tmp_file))
             self.assertTrue(os.path.exists(dst))
             with open(preserved, encoding="utf-8") as f:
@@ -553,6 +554,7 @@ class ConverterTests(unittest.TestCase):
 
             preserved = os.path.join(tmp, "공유폴더 (NFC 변환 보존 2026-10-26)")
             self.assertEqual(result.status, "error")
+            self.assertEqual(result.preserved, preserved)
             self.assertTrue(os.path.exists(os.path.join(preserved, "로컬전용.txt")))
 
 
