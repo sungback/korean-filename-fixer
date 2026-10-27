@@ -184,7 +184,11 @@ class NFDHandler(FileSystemEventHandler):
                     continue
                 self._pending.pop(path, None)
 
-            self._convert_path(path, is_directory)
+            # 예외 하나로 worker가 죽으면 이후 변환이 조용히 멈추므로 로그만 남기고 계속한다
+            try:
+                self._convert_path(path, is_directory)
+            except Exception:
+                logging.exception(f"Conversion worker error: {path!r}")
 
     def _convert_path(self, path: str, is_directory: bool):
         if self._is_closed():

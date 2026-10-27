@@ -157,6 +157,44 @@ class WatcherTests(unittest.TestCase):
             self.assertEqual(len(captured), 1)
             self.assertEqual(captured[0].status, "converted")
 
+    def test_async_worker_survives_exception_and_converts_next_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            captured = []
+            handler = NFDHandler(
+                captured.append,
+                settle_delay=0.01,
+                wait_for_stable=False,
+            )
+            self.addCleanup(handler.close)
+
+            broken_path = os.path.join(tmp, nfd_name("실패.txt"))
+            good_path = os.path.join(tmp, nfd_name("정상.txt"))
+            for path in (broken_path, good_path):
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("content")
+
+            original = handler._convert_path
+
+            def flaky(path, is_directory):
+                if path == broken_path:
+                    raise PermissionError("DriveFS 접근 불가")
+                return original(path, is_directory)
+
+            with patch.object(handler, "_convert_path", side_effect=flaky):
+                with self.assertLogs(level="ERROR"):
+                    handler._schedule_conversion(broken_path, False)
+                    deadline = time.monotonic() + 1.0
+                    while handler._pending and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    time.sleep(0.05)
+                handler._schedule_conversion(good_path, False)
+                deadline = time.monotonic() + 1.0
+                while not captured and time.monotonic() < deadline:
+                    time.sleep(0.01)
+
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0].status, "converted")
+
     def test_close_cancels_pending_async_conversion(self):
         with tempfile.TemporaryDirectory() as tmp:
             captured = []
